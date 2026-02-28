@@ -1,7 +1,3 @@
-# mistral online hackathon 2026 - guidelines
-
-welcome to the mistral online hackathon! this document contains essential information and guidelines specifically for the online track.
-
 ## essential links
 - **registration (hackiterate):** [join the platform](https://hackiterate.com/invite/63f20b24c20257b1c09c1350bb7ca261ffad93c8c507bd8a83828ce8cf6de80a)
 - **luma event:** [event details](https://luma.com/mistralhack-online?tk=cdrtoo) (for status updates and communications).
