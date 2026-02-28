@@ -1,350 +1,349 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useState } from "react"
+import Link from "next/link"
 import { motion, AnimatePresence } from "framer-motion"
 import {
-  Waves,
-  Microphone,
-  Export,
-  Play,
-  Pause,
+  ArrowLeft, ArrowCounterClockwise, ArrowClockwise,
+  Export, Play, Pause, Plus, DotsThreeVertical,
+  MagnifyingGlass, MinusCircle, PlusCircle, Waveform,
   SpeakerHigh,
-  Waveform,
-  ChartLine,
-  ChartPieSlice,
-  ArrowsInLineVertical,
-  Sliders
 } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
-import { Card } from "@/components/ui/card"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Slider } from "@/components/ui/slider"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Collapsible, CollapsibleContent, CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import { Progress } from "@/components/ui/progress"
 
 // --- Mock Data ---
-
-const MOCK_TRANSCRIPT = [
-  { id: 1, speaker: "Speaker 0", time: "00:10", text: "I can't believe we're actually doing this.", emotion: "Surprise", valence: 0.6, arousal: 0.8 },
-  { id: 2, speaker: "Speaker 1", time: "00:15", text: "It's been a long time coming. Are you nervous?", emotion: "Neutral", valence: 0.1, arousal: 0.2 },
-  { id: 3, speaker: "Speaker 0", time: "00:22", text: "A little bit. The data is just... it's a lot to process.", emotion: "Anxiety", valence: -0.4, arousal: 0.7 },
-  { id: 4, speaker: "Speaker 1", time: "00:30", text: "Don't worry, the models are calibrated for this level of noise.", emotion: "Calm", valence: 0.3, arousal: -0.2 },
+const SPEAKERS = [
+  { id: "s0", label: "Speaker 0", color: "bg-blue-400" },
+  { id: "s1", label: "Speaker 1", color: "bg-pink-400" },
 ]
 
-// --- Components ---
+const SEGMENTS = [
+  { id: 1, speaker: "s0", startTime: "00.10", endTime: "07.28", text: "[instrumental music plays]", emotion: "Neutral", valence: 0.0, arousal: 0.1 },
+  { id: 2, speaker: "s0", startTime: "08.10", endTime: "09.04", text: "Hello, I'm here.", emotion: "Calm", valence: 0.3, arousal: -0.1 },
+  { id: 3, speaker: "s1", startTime: "10.62", endTime: "11.00", text: "Oh.", emotion: "Surprise", valence: 0.4, arousal: 0.6 },
+  { id: 4, speaker: "s1", startTime: "13.02", endTime: "14.18", text: "Hi.", emotion: "Neutral", valence: 0.1, arousal: 0.0 },
+  { id: 5, speaker: "s0", startTime: "14.82", endTime: "16.40", text: "Hi.", emotion: "Happy", valence: 0.7, arousal: 0.4 },
+  { id: 6, speaker: "s1", startTime: "17.20", endTime: "22.10", text: "It's been a long time coming. Are you nervous?", emotion: "Curious", valence: 0.2, arousal: 0.5 },
+  { id: 7, speaker: "s0", startTime: "22.90", endTime: "28.50", text: "A little bit. The data is just... it's a lot to process.", emotion: "Anxiety", valence: -0.4, arousal: 0.7 },
+]
 
-const Header = () => (
-  <header className="h-14 border-b border-white/10 bg-black/40 backdrop-blur-md flex items-center justify-between px-6 sticky top-0 z-50">
-    <div className="flex items-center gap-4">
-      <div className="flex items-center gap-2">
-        <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse" />
-        <span className="text-sm font-medium text-white/80">LIVE_SESSION_01.wav</span>
-      </div>
-      <div className="h-4 w-[1px] bg-white/10" />
-      <span className="text-xs font-sans text-white/40">DURATION: 00:32:45</span>
-    </div>
-    <div className="flex items-center gap-3">
-      <Button variant="outline" size="sm" className="bg-white/5 border-white/10 hover:bg-white/10 text-white/80 gap-2">
-        <Export size={16} weight="bold" />
-        EXPORT
-      </Button>
-      <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
-        <div className="w-4 h-4 rounded-full bg-blue-500" />
-      </div>
-    </div>
-  </header>
-)
+const SPEAKER_MAP: Record<string, { label: string; color: string }> = {
+  s0: { label: "Speaker 0", color: "bg-blue-400" },
+  s1: { label: "Speaker 1", color: "bg-pink-400" },
+}
 
-const TranscriptPanel = ({ activeSegment, onSelect }: any) => (
-  <div className="flex flex-col h-full bg-black/20 border-r border-white/5">
-    <div className="p-4 border-b border-white/5 flex items-center gap-2">
-      <SpeakerHigh size={18} className="text-white/60" />
-      <h2 className="text-xs font-bold tracking-widest text-white/60 uppercase">DIARIZED_TRANSCRIPT</h2>
+// Transcript segment row — matches the reference's Speaker / Timestamp / Text layout
+function SegmentRow({
+  seg,
+  active,
+  onClick,
+}: {
+  seg: typeof SEGMENTS[number]
+  active: boolean
+  onClick: () => void
+}) {
+  const speaker = SPEAKER_MAP[seg.speaker]
+  return (
+    <div
+      onClick={onClick}
+      className={`flex gap-0 group transition-colors cursor-pointer border-b border-border last:border-0 ${active ? "bg-accent" : "hover:bg-muted/40"}`}
+    >
+      {/* Speaker col */}
+      <div className="w-36 flex-shrink-0 flex items-start gap-2 px-4 py-4">
+        <Avatar className="w-7 h-7 flex-shrink-0 mt-0.5">
+          <AvatarFallback className={`${speaker.color} text-white text-[10px] font-bold`}>
+            {speaker.label[0]}
+          </AvatarFallback>
+        </Avatar>
+        <span className="text-xs font-bold text-foreground leading-tight mt-1">{speaker.label}</span>
+      </div>
+
+      {/* Separator */}
+      <Separator orientation="vertical" className="h-auto" />
+
+      {/* Time + text col */}
+      <div className="flex-1 px-5 py-4 space-y-1 min-w-0">
+        <p className="text-[11px] text-muted-foreground font-medium">{seg.startTime}</p>
+        <p className="text-sm text-foreground leading-relaxed">{seg.text}</p>
+        <p className="text-[11px] text-muted-foreground font-medium">{seg.endTime}</p>
+      </div>
+
+      {/* Emotion badge — right */}
+      <div className="flex-shrink-0 flex items-start pt-4 pr-4">
+        <Badge
+          variant="outline"
+          className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0 border-border text-muted-foreground"
+        >
+          {seg.emotion}
+        </Badge>
+      </div>
     </div>
-    <ScrollArea className="flex-1 p-4">
-      <div className="space-y-6">
-        {MOCK_TRANSCRIPT.map((item) => (
-          <motion.div
-            key={item.id}
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            className={`group cursor-pointer p-3 rounded-xl transition-all ${activeSegment === item.id ? 'bg-white/10 ring-1 ring-white/20' : 'hover:bg-white/5'}`}
-            onClick={() => onSelect(item)}
-          >
-            <div className="flex items-start gap-3">
-              <Avatar className="w-8 h-8 rounded-lg">
-                <AvatarFallback className="bg-white/5 text-[10px] text-white/40">{item.speaker[item.speaker.length - 1]}</AvatarFallback>
-              </Avatar>
-              <div className="flex-1 space-y-1">
+  )
+}
+
+// Right panel: video preview + properties
+function RightPanel({ activeSegment }: { activeSegment: typeof SEGMENTS[number] | null }) {
+  return (
+    <div className="flex flex-col h-full border-l border-border bg-card">
+      {/* Fake video player */}
+      <div className="aspect-video w-full bg-slate-950 flex items-center justify-center flex-shrink-0 relative">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/20">
+          <Waveform size={36} />
+          <span className="text-[10px] font-bold uppercase tracking-widest">VIDEO PREVIEW</span>
+        </div>
+        {/* Fake video controls bar */}
+        <div className="absolute bottom-0 left-0 right-0 h-6 bg-black/60 flex items-center px-2 gap-1">
+          <Play size={10} weight="fill" className="text-white/60" />
+          <div className="flex-1 h-[2px] bg-white/20 rounded-full mx-1">
+            <div className="w-1/4 h-full bg-white/60 rounded-full" />
+          </div>
+          <span className="text-white/40 text-[9px]">0:14.82</span>
+        </div>
+      </div>
+
+      <ScrollArea className="flex-1">
+        <div className="p-4 space-y-4">
+          {/* Global Properties */}
+          <Collapsible defaultOpen>
+            <CollapsibleTrigger className="flex items-center gap-2 text-xs font-bold text-muted-foreground uppercase tracking-widest hover:text-foreground transition-colors w-full text-left">
+              <span>▾</span> Global Properties
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="mt-3 space-y-3 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-white/40 uppercase tracking-tighter">{item.speaker}</span>
-                  <span className="text-[10px] font-sans text-white/20">{item.time}</span>
+                  <span className="font-semibold text-foreground truncate max-w-[160px] text-xs">WeChat_20250804025710.mp4</span>
                 </div>
-                <p className="text-sm text-white/80 leading-relaxed font-sans">{item.text}</p>
-                <div className="pt-2 flex flex-wrap gap-2">
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger>
-                        <Badge variant="outline" className="bg-blue-500/10 border-blue-500/30 text-blue-400 text-[9px] px-1.5 py-0 uppercase font-sans">
-                          {item.emotion}
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent className="bg-black/90 border-white/10 text-xs">
-                        Dominant Emotion Tag
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                <Separator />
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground text-xs">Language</span>
+                  <span className="font-semibold text-xs">English</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground text-xs">Subtitles</span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-6 w-6">
+                        <DotsThreeVertical size={14} />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent>
+                      <DropdownMenuItem>Export SRT</DropdownMenuItem>
+                      <DropdownMenuItem>Export VTT</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </div>
-            </div>
-          </motion.div>
-        ))}
-      </div>
-    </ScrollArea>
-  </div>
-)
+            </CollapsibleContent>
+          </Collapsible>
 
-const QuadViewAnalytics = ({ activeSegment }: any) => {
+          <Separator />
+
+          {/* Emotional Analysis (active segment) */}
+          <Collapsible defaultOpen>
+            <CollapsibleTrigger className="flex items-center gap-2 text-xs font-bold text-muted-foreground uppercase tracking-widest hover:text-foreground transition-colors w-full text-left">
+              <span>▾</span> Emotional Analysis
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="mt-3 space-y-3">
+                {activeSegment ? (
+                  <>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">Emotion</span>
+                      <Badge variant="outline" className="font-bold text-[10px]">{activeSegment.emotion}</Badge>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                        <span>Valence</span>
+                        <span className="font-bold text-foreground">{((activeSegment.valence + 1) / 2 * 100).toFixed(0)}%</span>
+                      </div>
+                      <Progress value={(activeSegment.valence + 1) / 2 * 100} className="h-1.5" />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                        <span>Arousal</span>
+                        <span className="font-bold text-foreground">{((activeSegment.arousal + 1) / 2 * 100).toFixed(0)}%</span>
+                      </div>
+                      <Progress value={(activeSegment.arousal + 1) / 2 * 100} className="h-1.5" />
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground">Select a segment to view analysis.</p>
+                )}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        </div>
+      </ScrollArea>
+    </div>
+  )
+}
+
+// Bottom timeline bar
+function TimelineBar({ isPlaying, onToggle }: { isPlaying: boolean; onToggle: () => void }) {
   return (
-    <div className="grid grid-cols-2 grid-rows-2 h-full gap-[1px] bg-white/5">
-      {/* 1. Russell's Circumplex */}
-      <Card className="rounded-none border-none bg-black/40 p-4 flex flex-col gap-4 relative overflow-hidden group">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ChartLine size={18} className="text-blue-400" />
-            <h3 className="text-[10px] font-bold tracking-widest text-white/40 uppercase">RUSSELL_CIRCUMPLEX</h3>
+    <div className="border-t border-border bg-card flex-shrink-0">
+      {/* Speaker track rows */}
+      <div className="border-b border-border">
+        <div className="flex items-center px-3 py-1.5 gap-2 group">
+          <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground cursor-grab">
+            <DotsThreeVertical size={12} />
+          </Button>
+          <Avatar className="w-5 h-5">
+            <AvatarFallback className="bg-blue-400 text-white text-[8px] font-bold">S</AvatarFallback>
+          </Avatar>
+          <span className="text-xs font-semibold text-foreground w-20">Speaker 0</span>
+          <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100">
+            <DotsThreeVertical size={12} />
+          </Button>
+          {/* Track visualization */}
+          <div className="flex-1 h-5 flex items-center gap-[2px]">
+            {[60, 15, 12, 8, 10, 14].map((w, i) => (
+              <div key={i} className="h-4 bg-blue-200 rounded-sm" style={{ width: `${w}%` }} />
+            ))}
           </div>
-          <span className="text-[10px] font-sans text-white/20">V: {activeSegment?.valence || 0} / A: {activeSegment?.arousal || 0}</span>
         </div>
-        <div className="flex-1 bg-white/5 rounded-lg relative flex items-center justify-center border border-white/5">
-          <div className="absolute inset-0 flex items-center justify-center opacity-10">
-            <div className="w-full h-[1px] bg-white" />
-            <div className="h-full w-[1px] bg-white absolute" />
+        <div className="flex items-center px-3 py-1.5 gap-2 group">
+          <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground cursor-grab">
+            <DotsThreeVertical size={12} />
+          </Button>
+          <Avatar className="w-5 h-5">
+            <AvatarFallback className="bg-pink-400 text-white text-[8px] font-bold">S</AvatarFallback>
+          </Avatar>
+          <span className="text-xs font-semibold text-foreground w-20">Speaker 1</span>
+          <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100">
+            <DotsThreeVertical size={12} />
+          </Button>
+          <div className="flex-1 h-5 flex items-center gap-[2px]">
+            {[0, 0, 5, 6, 0, 8, 5, 6].map((w, i) => (
+              w > 0 ? <div key={i} className="h-4 bg-pink-200 rounded-sm" style={{ width: `${w}%` }} /> : <div key={i} style={{ width: "8%" }} />
+            ))}
           </div>
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 text-[8px] text-white/20">AROUSAL +</div>
-          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[8px] text-white/20">AROUSAL -</div>
-          <div className="absolute left-2 top-1/2 -translate-y-1/2 text-[8px] text-white/20 rotate-90">VALENCE -</div>
-          <div className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] text-white/20 -rotate-90">VALENCE +</div>
+        </div>
+      </div>
 
-          <motion.div
-            animate={{
-              x: (activeSegment?.valence || 0) * 100,
-              y: (activeSegment?.arousal || 0) * -100
-            }}
-            className="w-4 h-4 bg-blue-500 rounded-full shadow-[0_0_20px_rgba(59,130,246,0.5)] border-2 border-white relative z-10"
+      {/* Playback controls */}
+      <div className="flex items-center gap-4 px-4 h-10">
+        {/* Zoom */}
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <MinusCircle size={14} />
+          <Slider defaultValue={[40]} max={100} className="w-16" />
+          <PlusCircle size={14} />
+        </div>
+
+        <Separator orientation="vertical" className="h-5" />
+
+        {/* Play / speed */}
+        <div className="flex items-center gap-3">
+          <Button
+            size="icon"
+            className="h-7 w-7 rounded-full"
+            onClick={onToggle}
           >
-            <div className="absolute inset-0 animate-ping bg-blue-500 rounded-full opacity-50" />
-          </motion.div>
+            {isPlaying
+              ? <Pause size={13} weight="fill" />
+              : <Play size={13} weight="fill" />
+            }
+          </Button>
+          <span className="text-xs font-bold text-muted-foreground">1.0×</span>
         </div>
-      </Card>
 
-      {/* 2. Plutchik's Wheel / Radar */}
-      <Card className="rounded-none border-none bg-black/40 p-4 flex flex-col gap-4 group">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ChartPieSlice size={18} className="text-purple-400" />
-            <h3 className="text-[10px] font-bold tracking-widest text-white/40 uppercase">PLUTCHIK_WHEEL</h3>
-          </div>
+        <div className="flex-1" />
+
+        {/* Add segment */}
+        <Button variant="ghost" size="sm" className="text-xs text-muted-foreground font-semibold gap-1.5 h-7">
+          <Plus size={13} />
+          Add segment
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// --- Page ---
+export default function StudioPage() {
+  const [activeId, setActiveId] = useState<number>(1)
+  const [isPlaying, setIsPlaying] = useState(false)
+
+  const activeSegment = SEGMENTS.find(s => s.id === activeId) ?? null
+
+  return (
+    <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
+      {/* Top Bar */}
+      <header className="h-11 border-b border-border bg-card flex items-center px-4 gap-3 flex-shrink-0 sticky top-0 z-50">
+        <Link href="/">
+          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground">
+            <ArrowLeft size={16} />
+          </Button>
+        </Link>
+
+
+        {/* Undo / Redo */}
+        <div className="flex items-center gap-0.5 ml-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
+                <ArrowCounterClockwise size={15} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Undo</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
+                <ArrowClockwise size={15} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Redo</TooltipContent>
+          </Tooltip>
         </div>
-        <div className="flex-1 flex items-center justify-center relative">
-          <div className="w-32 h-32 rounded-full border border-white/10 flex items-center justify-center">
-            <div className="w-20 h-20 rounded-full border border-white/5 flex items-center justify-center" />
-            <div className="absolute inset-0 flex items-center justify-center">
-              {[0, 45, 90, 135, 180, 225, 270, 315].map(deg => (
-                <div key={deg} className="absolute w-[1px] h-full bg-white/5" style={{ transform: `rotate(${deg}deg)` }} />
+
+        <div className="flex-1" />
+
+        <Button className="gap-1.5 font-bold h-8 text-xs px-3">
+          <Export size={14} weight="bold" />
+          Export
+        </Button>
+      </header>
+
+      {/* Body */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left: Transcript scroll */}
+        <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+          <ScrollArea className="flex-1">
+            <div className="max-w-2xl mx-auto py-4">
+              {SEGMENTS.map(seg => (
+                <SegmentRow
+                  key={seg.id}
+                  seg={seg}
+                  active={seg.id === activeId}
+                  onClick={() => setActiveId(seg.id)}
+                />
               ))}
             </div>
-            <motion.div
-              animate={{ scale: [1, 1.1, 1], rotate: [0, 5, -5, 0] }}
-              transition={{ duration: 4, repeat: Infinity }}
-              className="w-24 h-24 bg-purple-500/20 rounded-full border border-purple-500/40 backdrop-blur-sm"
-              style={{ clipPath: 'polygon(50% 0%, 90% 20%, 100% 60%, 75% 100%, 25% 100%, 0% 60%, 10% 20%)' }}
-            />
-          </div>
-        </div>
-      </Card>
-
-      {/* 3. Prosodic Meters */}
-      <Card className="rounded-none border-none bg-black/40 p-4 flex flex-col gap-4 group">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ArrowsInLineVertical size={18} className="text-emerald-400" />
-            <h3 className="text-[10px] font-bold tracking-widest text-white/40 uppercase">PROSODIC_ANALYSIS</h3>
-          </div>
-        </div>
-        <div className="flex-1 flex items-end justify-between px-4 pb-2 gap-4">
-          {[
-            { label: "PITCH", value: 160, max: 400, unit: "Hz", color: "bg-emerald-500" },
-            { label: "JITTER", value: 0.12, max: 1, unit: "%", color: "bg-blue-500" },
-            { label: "RATE", value: 140, max: 300, unit: "wpm", color: "bg-amber-500" },
-            { label: "SHIM", value: 0.4, max: 1, unit: "dB", color: "bg-purple-500" },
-          ].map(meter => (
-            <div key={meter.label} className="flex-1 flex flex-col items-center gap-2 h-full">
-              <div className="flex-1 w-full bg-white/5 rounded-sm overflow-hidden relative flex flex-col justify-end">
-                <div className="absolute inset-0 opacity-10 flex flex-col justify-between p-1">
-                  {[...Array(10)].map((_, i) => <div key={i} className="h-[1px] w-full bg-white" />)}
-                </div>
-                <motion.div
-                  initial={{ height: 0 }}
-                  animate={{ height: `${(meter.value / meter.max) * 100}%` }}
-                  className={`w-full ${meter.color} shadow-[0_0_15px_rgba(255,255,255,0.1)]`}
-                />
-              </div>
-              <span className="text-[8px] font-bold text-white/20 uppercase tracking-tighter">{meter.label}</span>
-              <span className="text-[9px] font-sans text-white/40">{meter.value}{meter.unit}</span>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {/* 4. PAD Space */}
-      <Card className="rounded-none border-none bg-black/40 p-4 flex flex-col gap-4 group">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Sliders size={18} className="text-amber-400" />
-            <h3 className="text-[10px] font-bold tracking-widest text-white/40 uppercase">PAD_DIMENSIONS</h3>
-          </div>
-        </div>
-        <div className="flex-1 space-y-4 px-2">
-          {[
-            { label: "Pleasure", value: 45, color: "bg-emerald-500" },
-            { label: "Arousal", value: 78, color: "bg-blue-500" },
-            { label: "Dominance", value: 62, color: "bg-purple-500" },
-          ].map(slider => (
-            <div key={slider.label} className="space-y-1">
-              <div className="flex justify-between text-[8px] uppercase tracking-widest text-white/40">
-                <span>{slider.label}</span>
-                <span className="font-sans">{slider.value}%</span>
-              </div>
-              <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: `${slider.value}%` }}
-                  className={`h-full ${slider.color}`}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      </Card>
-    </div>
-  )
-}
-
-const EmotionalTimeline = () => (
-  <footer className="h-32 border-t border-white/10 bg-black/60 backdrop-blur-xl flex flex-col">
-    <div className="h-2 w-full bg-white/5 relative">
-      <div className="absolute left-1/4 w-[1px] h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,1)] z-10" />
-      <div className="absolute left-1/4 right-0 h-full bg-blue-500/10" />
-    </div>
-    <div className="flex-1 flex px-6 py-4 gap-6 items-center">
-      <div className="flex items-center gap-4">
-        <Button size="icon" variant="ghost" className="rounded-full hover:bg-white/10 text-white">
-          <Waves size={24} weight="bold" />
-        </Button>
-        <div className="flex items-center gap-1">
-          <Button size="icon" variant="ghost" className="h-8 w-8 text-white/60">
-            <Play size={18} weight="fill" />
-          </Button>
-          <span className="text-[10px] font-sans text-white/40">00:32:04 / 01:20:00</span>
-        </div>
-      </div>
-      <div className="flex-1 h-12 relative flex items-center justify-between gap-[2px]">
-        {[...Array(120)].map((_, i) => (
-          <div
-            key={i}
-            className={`w-[2px] rounded-full transition-all duration-300 ${i % 10 === 0 ? 'h-8 bg-white/20' : 'h-4 bg-white/5'}`}
-            style={{ height: `${20 + Math.random() * 60}%`, opacity: i > 30 ? 0.3 : 1 }}
-          />
-        ))}
-        <div className="absolute inset-x-0 h-[1px] bg-white/5" />
-      </div>
-      <div className="flex items-center gap-4">
-        <div className="flex flex-col items-end">
-          <span className="text-[8px] font-bold text-white/20 uppercase tracking-widest">SCANNING_RESOLUTION</span>
-          <span className="text-[10px] font-sans text-white/60">120ms/sample</span>
-        </div>
-        <Slider defaultValue={[25]} max={100} step={1} className="w-24" />
-      </div>
-    </div>
-  </footer>
-)
-
-const RecorderOverlay = () => {
-  const [isRecording, setIsRecording] = useState(false)
-
-  return (
-    <div className="absolute right-8 bottom-40 z-50">
-      <motion.button
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        onClick={() => setIsRecording(!isRecording)}
-        className={`w-16 h-16 rounded-full flex items-center justify-center relative transition-all duration-500 ${isRecording ? 'bg-red-500 shadow-[0_0_50px_rgba(239,68,68,0.5)]' : 'bg-white/10 hover:bg-white/20 backdrop-blur-md'}`}
-      >
-        <AnimatePresence mode="wait">
-          {isRecording ? (
-            <motion.div
-              key="stop"
-              initial={{ opacity: 0, scale: 0 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0 }}
-            >
-              <div className="w-6 h-6 bg-white rounded-sm" />
-            </motion.div>
-          ) : (
-            <motion.div
-              key="mic"
-              initial={{ opacity: 0, scale: 0 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0 }}
-            >
-              <Microphone size={32} weight="bold" className="text-white" />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {isRecording && (
-          <motion.div
-            initial={{ scale: 1 }}
-            animate={{ scale: [1, 1.5, 1], opacity: [0.5, 0, 0.5] }}
-            transition={{ duration: 2, repeat: Infinity }}
-            className="absolute inset-0 rounded-full border-2 border-red-500"
-          />
-        )}
-      </motion.button>
-    </div>
-  )
-}
-
-export default function StudioPage() {
-  const [activeSegment, setActiveSegment] = useState(MOCK_TRANSCRIPT[0])
-
-  return (
-    <main className="flex flex-col h-screen bg-[#050505] text-white selection:bg-blue-500/30 overflow-hidden font-sans">
-      <Header />
-
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Panel: Transcript */}
-        <div className="w-[400px]">
-          <TranscriptPanel
-            activeSegment={activeSegment.id}
-            onSelect={setActiveSegment}
-          />
+          </ScrollArea>
         </div>
 
-        {/* Right Panel: Analytics */}
-        <div className="flex-1 flex flex-col relative">
-          <QuadViewAnalytics activeSegment={activeSegment} />
-
-          <div className="absolute inset-0 pointer-events-none border-[1px] border-white/5 z-20" />
-
-          {/* Recorder Hub */}
-          <RecorderOverlay />
+        {/* Right: Properties panel ~260px */}
+        <div className="w-[280px] flex-shrink-0 overflow-hidden flex flex-col">
+          <RightPanel activeSegment={activeSegment} />
         </div>
       </div>
 
-      <EmotionalTimeline />
-    </main>
+      {/* Bottom: Timeline */}
+      <TimelineBar isPlaying={isPlaying} onToggle={() => setIsPlaying(p => !p)} />
+    </div>
   )
 }

@@ -10,8 +10,8 @@ const lato = Lato({
 });
 
 export const metadata: Metadata = {
-  title: "Voxtral Studio | Emotional Speech Recognition",
-  description: "Advanced emotional speech recognition and transcription studio.",
+  title: "Ethos Studio | Emotional Speech Recognition",
+  description: "Advanced emotional speech recognition and transcription studio powered by Ethostral.",
 };
 
 export default function RootLayout({
@@ -20,9 +20,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <body
-        className={`${lato.variable} antialiased selection:bg-blue-500/30 font-sans`}
+        className={`${lato.variable} antialiased selection:bg-black/10 font-sans`}
       >
         <TooltipProvider>
           {children}
