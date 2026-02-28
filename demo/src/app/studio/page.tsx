@@ -42,7 +42,7 @@ const Header = () => (
         <span className="text-sm font-medium text-white/80">LIVE_SESSION_01.wav</span>
       </div>
       <div className="h-4 w-[1px] bg-white/10" />
-      <span className="text-xs font-mono text-white/40">DURATION: 00:32:45</span>
+      <span className="text-xs font-sans text-white/40">DURATION: 00:32:45</span>
     </div>
     <div className="flex items-center gap-3">
       <Button variant="outline" size="sm" className="bg-white/5 border-white/10 hover:bg-white/10 text-white/80 gap-2">
@@ -79,14 +79,14 @@ const TranscriptPanel = ({ activeSegment, onSelect }: any) => (
               <div className="flex-1 space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-bold text-white/40 uppercase tracking-tighter">{item.speaker}</span>
-                  <span className="text-[10px] font-mono text-white/20">{item.time}</span>
+                  <span className="text-[10px] font-sans text-white/20">{item.time}</span>
                 </div>
                 <p className="text-sm text-white/80 leading-relaxed font-sans">{item.text}</p>
                 <div className="pt-2 flex flex-wrap gap-2">
                   <TooltipProvider>
                     <Tooltip>
                       <TooltipTrigger>
-                        <Badge variant="outline" className="bg-blue-500/10 border-blue-500/30 text-blue-400 text-[9px] px-1.5 py-0 uppercase font-mono">
+                        <Badge variant="outline" className="bg-blue-500/10 border-blue-500/30 text-blue-400 text-[9px] px-1.5 py-0 uppercase font-sans">
                           {item.emotion}
                         </Badge>
                       </TooltipTrigger>
@@ -115,7 +115,7 @@ const QuadViewAnalytics = ({ activeSegment }: any) => {
             <ChartLine size={18} className="text-blue-400" />
             <h3 className="text-[10px] font-bold tracking-widest text-white/40 uppercase">RUSSELL_CIRCUMPLEX</h3>
           </div>
-          <span className="text-[10px] font-mono text-white/20">V: {activeSegment?.valence || 0} / A: {activeSegment?.arousal || 0}</span>
+          <span className="text-[10px] font-sans text-white/20">V: {activeSegment?.valence || 0} / A: {activeSegment?.arousal || 0}</span>
         </div>
         <div className="flex-1 bg-white/5 rounded-lg relative flex items-center justify-center border border-white/5">
           <div className="absolute inset-0 flex items-center justify-center opacity-10">
@@ -192,7 +192,7 @@ const QuadViewAnalytics = ({ activeSegment }: any) => {
                 />
               </div>
               <span className="text-[8px] font-bold text-white/20 uppercase tracking-tighter">{meter.label}</span>
-              <span className="text-[9px] font-mono text-white/40">{meter.value}{meter.unit}</span>
+              <span className="text-[9px] font-sans text-white/40">{meter.value}{meter.unit}</span>
             </div>
           ))}
         </div>
@@ -215,7 +215,7 @@ const QuadViewAnalytics = ({ activeSegment }: any) => {
             <div key={slider.label} className="space-y-1">
               <div className="flex justify-between text-[8px] uppercase tracking-widest text-white/40">
                 <span>{slider.label}</span>
-                <span className="font-mono">{slider.value}%</span>
+                <span className="font-sans">{slider.value}%</span>
               </div>
               <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
                 <motion.div
@@ -247,7 +247,7 @@ const EmotionalTimeline = () => (
           <Button size="icon" variant="ghost" className="h-8 w-8 text-white/60">
             <Play size={18} weight="fill" />
           </Button>
-          <span className="text-[10px] font-mono text-white/40">00:32:04 / 01:20:00</span>
+          <span className="text-[10px] font-sans text-white/40">00:32:04 / 01:20:00</span>
         </div>
       </div>
       <div className="flex-1 h-12 relative flex items-center justify-between gap-[2px]">
@@ -263,7 +263,7 @@ const EmotionalTimeline = () => (
       <div className="flex items-center gap-4">
         <div className="flex flex-col items-end">
           <span className="text-[8px] font-bold text-white/20 uppercase tracking-widest">SCANNING_RESOLUTION</span>
-          <span className="text-[10px] font-mono text-white/60">120ms/sample</span>
+          <span className="text-[10px] font-sans text-white/60">120ms/sample</span>
         </div>
         <Slider defaultValue={[25]} max={100} step={1} className="w-24" />
       </div>
@@ -321,7 +321,7 @@ export default function StudioPage() {
   const [activeSegment, setActiveSegment] = useState(MOCK_TRANSCRIPT[0])
 
   return (
-    <main className="flex flex-col h-screen bg-[#050505] text-white selection:bg-blue-500/30 overflow-hidden font-mono">
+    <main className="flex flex-col h-screen bg-[#050505] text-white selection:bg-blue-500/30 overflow-hidden font-sans">
       <Header />
 
       <div className="flex-1 flex overflow-hidden">

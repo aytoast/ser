@@ -22,7 +22,7 @@ export default function LandingPage() {
           <motion.div
             initial={{ scale: 0.9 }}
             animate={{ scale: 1 }}
-            className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-mono text-white/60 tracking-widest uppercase"
+            className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-sans text-white/60 tracking-widest uppercase"
           >
             <ChartLine size={14} className="text-blue-500" />
             V0.1.0_PROTOTYPE
@@ -58,7 +58,7 @@ export default function LandingPage() {
           ].map(stat => (
             <div key={stat.label} className="flex flex-col items-center">
               <span className="text-[10px] font-bold text-white/20 tracking-widest uppercase">{stat.label}</span>
-              <span className="text-sm font-mono text-white/60">{stat.value}</span>
+              <span className="text-sm font-sans text-white/60">{stat.value}</span>
             </div>
           ))}
         </div>
