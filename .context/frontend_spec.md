@@ -1,7 +1,8 @@
 ## visual identity
-- **theme:** glassmorphism on a deep dark void background.
-- **accent colors:** dynamic palette that shifts based on primary detected emotion (e.g., crimson for stress, electric blue for high arousal).
-- **typography:** high-precision monospaced fonts for data, with sans-serif headings (e.g., Lato, JetBrains Mono).
+- **typography:** high-precision monospaced fonts (JetBrains Mono) for data, alongside maia-style sans-serif for UI.
+- **componentry:** shadcn ui base.
+- **style profile:** maia (radix-maia) — characterized by soft rounding, high-contrast surfaces, and subtle glassmorphism.
+- **iconography:** phosphor icons (thin or regular weight).
 
 ## layout & components
 1. **header:** metadata bar showing filename, session duration, and a global "Export" button (JSON/CSV).
@@ -22,3 +23,5 @@
 ## technical requirements
 - **real-time synchronicity:** ensuring the transcription, timeline, and 4-way analytics update in perfect sync with sub-500ms latency.
 - **framing:** Next.js with Framer Motion for premium transitions.
+- **ui library:** shadcn/ui with maia theme configuration.
+- **icons:** @phosphor-icons/react.
