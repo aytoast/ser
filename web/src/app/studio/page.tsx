@@ -187,7 +187,7 @@ function RightPanel({
   return (
     <div className="flex flex-col h-full border-l border-border bg-background">
       {/* Video / Audio Preview */}
-      <div className="aspect-video w-full bg-slate-950 flex items-center justify-center flex-shrink-0 relative group overflow-hidden">
+      <div className="aspect-video w-full bg-slate-950 flex items-center justify-center flex-shrink-0 relative overflow-hidden">
         <video
           ref={mediaRef as React.RefObject<HTMLVideoElement>}
           src={audioUrl || undefined}
@@ -197,11 +197,6 @@ function RightPanel({
         {(!isVideo || !audioUrl) && (
           <NextImage src="/logo.svg" alt="Preview" width={48} height={48} className="opacity-10" />
         )}
-        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/30">
-          <Button variant="ghost" size="icon" className="text-white hover:bg-white/20" onClick={onToggle}>
-            <Play size={24} weight="fill" />
-          </Button>
-        </div>
       </div>
 
       <ScrollArea className="flex-1">
