@@ -72,6 +72,7 @@ def _transcribe_sync(wav_path: str) -> str:
     inputs = _processor.apply_transcription_request(
         audio=[audio_array],
         format=["WAV"],
+        language="en",
         model_id=MODEL_ID,
         return_tensors="pt",
     )
@@ -516,6 +517,10 @@ async def transcribe_diarize(audio: UploadFile = File(...)):
         loop = asyncio.get_running_loop()
         full_text = await loop.run_in_executor(None, _transcribe_sync, wav_path)
         print(f"[voxtral] {req_id} STT done {(time.perf_counter()-t0)*1000:.0f}ms text_len={len(full_text)}")
+    except Exception as e:
+        import traceback as _tb
+        print(f"[voxtral] {req_id} STT error: {e}\n{_tb.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
     finally:
         if wav_path and os.path.exists(wav_path):
             try: os.unlink(wav_path)

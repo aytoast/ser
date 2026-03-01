@@ -90,11 +90,13 @@ async function proxyToModel(req, res, modelPath, timeoutMs) {
     const r = await fetch(url, { method: "POST", body: form, signal: controller.signal });
     clearTimeout(timeoutId);
 
-    const data = await r.json().catch(() => ({}));
+    const rawText = await r.text().catch(() => "");
+    let data = {};
+    try { data = JSON.parse(rawText); } catch {}
 
     if (!r.ok) {
       const errMsg = data.detail || data.error || "Failed";
-      console.error(`[server] ${reqId} model error ${r.status}: ${errMsg}`);
+      console.error(`[server] ${reqId} model error ${r.status}: ${errMsg} | raw=${rawText.slice(0, 300)}`);
       return res.status(r.status >= 500 ? 502 : r.status).json({
         error: typeof errMsg === "string" ? errMsg : "Model error",
       });
