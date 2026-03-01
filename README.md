@@ -10,20 +10,20 @@ pinned: false
 
 # Ethos Studio — Emotional Speech Recognition
 
-Speech-to-text service with VAD sentence segmentation and per-segment emotion analysis, powered by [Voxtral Mini 4B](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602). Three-layer architecture: **Model** (Python) + **Server** (Node) + **Frontend** (Next.js).
+Speech-to-text service with VAD sentence segmentation and per-segment emotion analysis, powered by [YongkangZOU/evoxtral-lora](https://huggingface.co/YongkangZOU/evoxtral-lora) (Voxtral Mini 3B + LoRA, hosted on Modal). Three-layer architecture: **Model** (Python) + **Server** (Node) + **Frontend** (Next.js).
 
 ## Architecture
 
 ```
-Browser (port 3030)  →  Server layer (Node, :3000)  →  Model layer (Python, :8000)
-      ↑ Studio UI            POST /api/speech-to-text          POST /transcribe
+Browser (port 3030)  →  Server layer (Node, :3000)  →  Model layer (Python, :8000)  →  Evoxtral API (Modal)
+      ↑ Studio UI            POST /api/speech-to-text          POST /transcribe               POST /transcribe
       ↑ Upload dialog        POST /api/transcribe-diarize      POST /transcribe-diarize
                              GET  /health                       GET  /health
 ```
 
 | Layer | Path | Role |
 |-------|------|------|
-| **Model** | `model/voxtral-server` | Voxtral inference, VAD sentence segmentation, emotion analysis |
+| **Model** | `model/voxtral-server` | Proxy to external evoxtral API; VAD segmentation; emotion parsing |
 | **Server** | `demo/server` | API entrypoint; proxies to Model |
 | **Frontend** | `demo` | Next.js UI (upload, Studio editor, waveform, timeline) |
 
@@ -31,7 +31,7 @@ See [demo/README.md](demo/README.md) for full API and usage; [model/voxtral-serv
 
 ## How to run
 
-**Requirements**: Python 3.10+, Node.js 20+, ffmpeg; GPU ≥16GB VRAM recommended (Apple Silicon MPS supported).
+**Requirements**: Python 3.10+, Node.js 20+, ffmpeg.
 
 ### 1. Start Model layer (port 8000)
 
@@ -43,7 +43,7 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Wait for `Application startup complete`. First run may download the model (~8–16GB).
+Starts immediately — no local model download needed. Inference is handled by the external evoxtral API.
 
 ### 2. Start Server layer (port 3000)
 
