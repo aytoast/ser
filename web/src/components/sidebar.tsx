@@ -2,12 +2,13 @@
 
 import React, { useEffect, useState } from "react"
 import Link from "next/link"
-import { usePathname, useSearchParams } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   Waveform,
   Handshake,
   Heart,
   Plus,
+  X,
 } from "@phosphor-icons/react"
 import Image from "next/image"
 import {
@@ -25,6 +26,7 @@ import {
 import {
   listRecentSessions,
   ensureStoreInitialized,
+  removeRecentSession,
   type RecentSession,
 } from "@/lib/session-store"
 
@@ -45,6 +47,7 @@ function stripExtension(name: string) {
 
 export function AppSidebar() {
   const pathname = usePathname()
+  const router = useRouter()
   const searchParams = useSearchParams()
   const currentSessionId = searchParams.get("s")
   const [recent, setRecent] = useState<RecentSession[]>([])
@@ -54,6 +57,17 @@ export function AppSidebar() {
     ensureStoreInitialized()
     setRecent(listRecentSessions())
   }, [pathname])
+
+  function handleDelete(id: string, e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    removeRecentSession(id)
+    setRecent(listRecentSessions())
+    // Navigate home if we just deleted the active session
+    if (currentSessionId === id) {
+      router.push("/")
+    }
+  }
 
   return (
     <Sidebar>
@@ -100,11 +114,11 @@ export function AppSidebar() {
                 recent.map((session) => {
                   const href = `/studio?s=${session.id}`
                   return (
-                    <SidebarMenuItem key={session.id}>
+                    <SidebarMenuItem key={session.id} className="group/item relative">
                       <SidebarMenuButton
                         asChild
                         isActive={pathname === "/studio" && currentSessionId === session.id}
-                        className="h-auto py-1.5 items-start"
+                        className="h-auto py-1.5 items-start pr-7"
                       >
                         <Link href={href}>
                           <Waveform className="mt-0.5 shrink-0" />
@@ -118,6 +132,13 @@ export function AppSidebar() {
                           </div>
                         </Link>
                       </SidebarMenuButton>
+                      <button
+                        onClick={(e) => handleDelete(session.id, e)}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 size-5 rounded flex items-center justify-center opacity-0 group-hover/item:opacity-100 hover:bg-muted text-muted-foreground hover:text-foreground transition-opacity"
+                        aria-label="Delete session"
+                      >
+                        <X size={12} />
+                      </button>
                     </SidebarMenuItem>
                   )
                 })
