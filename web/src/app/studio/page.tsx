@@ -270,43 +270,43 @@ function isVideoFile(filename: string): boolean {
   return VIDEO_EXTS.has(ext)
 }
 
-// Mirrors Python _TAG_EMOTIONS in api/main.py — bracket tag → emotion label
-const TAG_EMOTIONS: Record<string, string> = {
-  "laughs": "Happy",
-  "laughing": "Happy",
-  "chuckles": "Happy",
-  "giggles": "Happy",
-  "sighs": "Sad",
-  "sighing": "Sad",
-  "cries": "Sad",
-  "crying": "Sad",
-  "whispers": "Calm",
-  "whispering": "Calm",
-  "shouts": "Angry",
-  "shouting": "Angry",
-  "exclaims": "Excited",
-  "gasps": "Surprised",
-  "hesitates": "Anxious",
-  "stutters": "Anxious",
-  "stammers": "Anxious",
-  "mumbles": "Sad",
-  "nervous": "Anxious",
-  "frustrated": "Frustrated",
-  "excited": "Excited",
-  "sad": "Sad",
-  "angry": "Angry",
-  "claps": "Happy",
-  "applause": "Happy",
-  "clears throat": "Neutral",
-  "pause": "Neutral",
-  "laughs nervously": "Anxious",
+// Mirrors Python _TAG_EMOTIONS in api/main.py — bracket tag → { emotion, valence, arousal }
+const TAG_EMOTIONS: Record<string, { emotion: string; valence: number; arousal: number }> = {
+  "laughs":           { emotion: "Happy",       valence:  0.70, arousal:  0.60 },
+  "laughing":         { emotion: "Happy",       valence:  0.70, arousal:  0.60 },
+  "chuckles":         { emotion: "Happy",       valence:  0.50, arousal:  0.30 },
+  "giggles":          { emotion: "Happy",       valence:  0.60, arousal:  0.40 },
+  "sighs":            { emotion: "Sad",         valence: -0.30, arousal: -0.30 },
+  "sighing":          { emotion: "Sad",         valence: -0.30, arousal: -0.30 },
+  "cries":            { emotion: "Sad",         valence: -0.70, arousal:  0.40 },
+  "crying":           { emotion: "Sad",         valence: -0.70, arousal:  0.40 },
+  "whispers":         { emotion: "Calm",        valence:  0.10, arousal: -0.50 },
+  "whispering":       { emotion: "Calm",        valence:  0.10, arousal: -0.50 },
+  "shouts":           { emotion: "Angry",       valence: -0.50, arousal:  0.80 },
+  "shouting":         { emotion: "Angry",       valence: -0.50, arousal:  0.80 },
+  "exclaims":         { emotion: "Excited",     valence:  0.50, arousal:  0.70 },
+  "gasps":            { emotion: "Surprised",   valence:  0.20, arousal:  0.70 },
+  "hesitates":        { emotion: "Anxious",     valence: -0.20, arousal:  0.30 },
+  "stutters":         { emotion: "Anxious",     valence: -0.20, arousal:  0.40 },
+  "stammers":         { emotion: "Anxious",     valence: -0.25, arousal:  0.35 },
+  "mumbles":          { emotion: "Sad",         valence: -0.20, arousal: -0.30 },
+  "nervous":          { emotion: "Anxious",     valence: -0.30, arousal:  0.40 },
+  "frustrated":       { emotion: "Frustrated",  valence: -0.50, arousal:  0.50 },
+  "excited":          { emotion: "Excited",     valence:  0.50, arousal:  0.70 },
+  "sad":              { emotion: "Sad",         valence: -0.60, arousal: -0.20 },
+  "angry":            { emotion: "Angry",       valence: -0.60, arousal:  0.70 },
+  "claps":            { emotion: "Happy",       valence:  0.60, arousal:  0.50 },
+  "applause":         { emotion: "Happy",       valence:  0.60, arousal:  0.50 },
+  "clears throat":    { emotion: "Neutral",     valence:  0.00, arousal:  0.10 },
+  "pause":            { emotion: "Neutral",     valence:  0.00, arousal: -0.10 },
+  "laughs nervously": { emotion: "Anxious",     valence: -0.10, arousal:  0.40 },
 }
 
-function getTagEmotion(tag: string): string | null {
+function getTagEntry(tag: string) {
   const lower = tag.toLowerCase().trim()
   if (TAG_EMOTIONS[lower]) return TAG_EMOTIONS[lower]
-  for (const [key, emotion] of Object.entries(TAG_EMOTIONS)) {
-    if (lower.includes(key)) return emotion
+  for (const [key, entry] of Object.entries(TAG_EMOTIONS)) {
+    if (lower.includes(key)) return entry
   }
   return null
 }
@@ -341,35 +341,38 @@ function RightPanel({
   // Per-second face emotion from timeline (more granular than segment majority-vote)
   const liveFaceEmo = faceTimeline[String(Math.floor(currentTime))] ?? liveSeg?.face_emotion ?? null
 
-  // Streaming speech emotion — derived from [bracket] tag positions within the active segment.
+  // Streaming speech emotion + valence + arousal — derived from [bracket] tag positions.
   // Each tag's timing is estimated proportionally by clean-char position within the segment.
-  const liveSpeechEmo = useMemo(() => {
+  const liveSpeech = useMemo(() => {
     if (!liveSeg) return null
     const text = liveSeg.text
     const segDuration = Math.max(liveSeg.end - liveSeg.start, 0.001)
     const cleanText = text.replace(/\[[^\]]+\]/g, "").trim()
     const totalChars = Array.from(cleanText).length
-    if (totalChars === 0) return liveSeg.emotion
 
-    let lastEmo: string | null = null
-    let cleanCharsBefore = 0
-    let rawPos = 0
-    const re = /\[([^\]]+)\]/g
-    let m
-    while ((m = re.exec(text)) !== null) {
-      // Count clean chars between the previous position and this bracket tag
-      const chunkBefore = text.slice(rawPos, m.index).replace(/\[[^\]]+\]/g, "")
-      cleanCharsBefore += Array.from(chunkBefore).length
-      rawPos = m.index + m[0].length
-
-      // Estimated time this tag occurs
-      const tagTime = liveSeg.start + (cleanCharsBefore / totalChars) * segDuration
-      if (tagTime <= currentTime) {
-        const emo = getTagEmotion(m[1])
-        if (emo) lastEmo = emo
+    let last: { emotion: string; valence: number; arousal: number } | null = null
+    if (totalChars > 0) {
+      let cleanCharsBefore = 0
+      let rawPos = 0
+      const re = /\[([^\]]+)\]/g
+      let m
+      while ((m = re.exec(text)) !== null) {
+        const chunkBefore = text.slice(rawPos, m.index).replace(/\[[^\]]+\]/g, "")
+        cleanCharsBefore += Array.from(chunkBefore).length
+        rawPos = m.index + m[0].length
+        const tagTime = liveSeg.start + (cleanCharsBefore / totalChars) * segDuration
+        if (tagTime <= currentTime) {
+          const entry = getTagEntry(m[1])
+          if (entry) last = entry
+        }
       }
     }
-    return lastEmo ?? liveSeg.emotion
+
+    return {
+      emo:     last?.emotion ?? liveSeg.emotion,
+      valence: last?.valence ?? liveSeg.valence,
+      arousal: last?.arousal ?? liveSeg.arousal,
+    }
   }, [liveSeg, currentTime])
 
   return (
@@ -423,13 +426,13 @@ function RightPanel({
                 )}
               </div>
 
-              {liveSeg ? (
+              {liveSeg && liveSpeech ? (
                 <div className="space-y-4 pt-1">
                   {/* Speech emotion — streams sub-segment via bracket tag timing */}
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">Speech</span>
-                    <Badge key={liveSpeechEmo} variant="secondary" className="text-[11px] h-5 px-2 font-medium rounded-full transition-all duration-300 animate-in fade-in zoom-in-95 duration-200">
-                      {liveSpeechEmo}
+                    <Badge key={liveSpeech.emo} variant="secondary" className="text-[11px] h-5 px-2 font-medium rounded-full transition-all duration-300 animate-in fade-in zoom-in-95 duration-200">
+                      {liveSpeech.emo}
                     </Badge>
                   </div>
 
@@ -444,12 +447,12 @@ function RightPanel({
                     </div>
                   )}
 
-                  {/* Valence bar */}
+                  {/* Valence bar — streams with bracket tag valence */}
                   <div className="space-y-1.5">
                     <div className="flex justify-between text-[10px] text-muted-foreground">
                       <span>Valence</span>
-                      <span className={liveSeg.valence >= 0 ? "text-emerald-500" : "text-red-400"}>
-                        {liveSeg.valence > 0 ? "+" : ""}{liveSeg.valence.toFixed(2)}
+                      <span className={liveSpeech.valence >= 0 ? "text-emerald-500" : "text-red-400"}>
+                        {liveSpeech.valence > 0 ? "+" : ""}{liveSpeech.valence.toFixed(2)}
                       </span>
                     </div>
                     <div className="relative h-1.5 bg-muted rounded-full overflow-hidden">
@@ -457,11 +460,11 @@ function RightPanel({
                       <div
                         className={cn(
                           "absolute top-0 h-full rounded-full transition-all duration-500",
-                          liveSeg.valence >= 0 ? "bg-emerald-400" : "bg-red-400"
+                          liveSpeech.valence >= 0 ? "bg-emerald-400" : "bg-red-400"
                         )}
                         style={{
-                          left: liveSeg.valence >= 0 ? "50%" : `${(0.5 + liveSeg.valence / 2) * 100}%`,
-                          width: `${Math.abs(liveSeg.valence) * 50}%`,
+                          left: liveSpeech.valence >= 0 ? "50%" : `${(0.5 + liveSpeech.valence / 2) * 100}%`,
+                          width: `${Math.abs(liveSpeech.valence) * 50}%`,
                         }}
                       />
                     </div>
@@ -470,12 +473,12 @@ function RightPanel({
                     </div>
                   </div>
 
-                  {/* Arousal bar */}
+                  {/* Arousal bar — streams with bracket tag arousal */}
                   <div className="space-y-1.5">
                     <div className="flex justify-between text-[10px] text-muted-foreground">
                       <span>Arousal</span>
-                      <span className={liveSeg.arousal >= 0 ? "text-blue-400" : "text-slate-400"}>
-                        {liveSeg.arousal > 0 ? "+" : ""}{liveSeg.arousal.toFixed(2)}
+                      <span className={liveSpeech.arousal >= 0 ? "text-blue-400" : "text-slate-400"}>
+                        {liveSpeech.arousal > 0 ? "+" : ""}{liveSpeech.arousal.toFixed(2)}
                       </span>
                     </div>
                     <div className="relative h-1.5 bg-muted rounded-full overflow-hidden">
@@ -483,11 +486,11 @@ function RightPanel({
                       <div
                         className={cn(
                           "absolute top-0 h-full rounded-full transition-all duration-500",
-                          liveSeg.arousal >= 0 ? "bg-blue-400" : "bg-slate-400"
+                          liveSpeech.arousal >= 0 ? "bg-blue-400" : "bg-slate-400"
                         )}
                         style={{
-                          left: liveSeg.arousal >= 0 ? "50%" : `${(0.5 + liveSeg.arousal / 2) * 100}%`,
-                          width: `${Math.abs(liveSeg.arousal) * 50}%`,
+                          left: liveSpeech.arousal >= 0 ? "50%" : `${(0.5 + liveSpeech.arousal / 2) * 100}%`,
+                          width: `${Math.abs(liveSpeech.arousal) * 50}%`,
                         }}
                       />
                     </div>
