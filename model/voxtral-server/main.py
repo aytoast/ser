@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
         _dtype = torch.float16   # MPS does not support bfloat16
     else:
         _device = torch.device("cpu")
-        _dtype = torch.float32
+        _dtype = torch.bfloat16  # halves memory vs float32 (8 GB vs 16 GB); supported on modern x86
     print(f"[voxtral] Device: {_device}  dtype: {_dtype}")
 
     print(f"[voxtral] Loading model: {REPO_ID} (first run may download ~8–16GB)...")
