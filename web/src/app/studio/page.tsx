@@ -161,6 +161,7 @@ function RightPanel({
   isVideo,
   mediaRef,
   segments,
+  faceTimeline,
   currentTime,
   isPlaying,
   onToggle,
@@ -171,6 +172,7 @@ function RightPanel({
   isVideo: boolean
   mediaRef: React.RefObject<HTMLVideoElement | null>
   segments: Segment[]
+  faceTimeline: Record<string, string>
   isPlaying: boolean
   currentTime: number
   duration: number
@@ -178,6 +180,9 @@ function RightPanel({
 }) {
   // Find the segment active at the current playback position
   const liveSeg = segments.find(s => currentTime >= s.start && currentTime < s.end) ?? null
+
+  // Per-second face emotion from timeline (more granular than segment majority-vote)
+  const liveFaceEmo = faceTimeline[String(Math.floor(currentTime))] ?? liveSeg?.face_emotion ?? null
 
   return (
     <div className="flex flex-col h-full border-l border-border bg-background">
@@ -245,13 +250,13 @@ function RightPanel({
                     </Badge>
                   </div>
 
-                  {/* Face emotion — video only */}
-                  {liveSeg.face_emotion && (
+                  {/* Face emotion — per-second from timeline, fallback to segment majority */}
+                  {liveFaceEmo && (
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted-foreground">Face</span>
                       <Badge variant="outline" className="text-[11px] h-5 px-2 font-medium rounded-full gap-1 transition-all duration-300">
                         <VideoCamera size={9} weight="fill" className="text-pink-500" />
-                        {liveSeg.face_emotion}
+                        {liveFaceEmo}
                       </Badge>
                     </div>
                   )}
@@ -515,6 +520,7 @@ function StudioContent() {
   const audioUrl = session?.audioUrl ?? ""
   const filename = session?.filename ?? MOCK_FILENAME
   const duration = session?.data.duration ?? MOCK_DURATION
+  const faceTimeline = session?.data.face_emotion_timeline ?? {}
 
   const speakerMap = useMemo(() => buildSpeakerMap(segments), [segments])
   const activeSegment = segments.find(s => s.id === activeId) ?? segments[0] ?? null
@@ -659,6 +665,7 @@ function StudioContent() {
             isVideo={isVideo}
             mediaRef={mediaRef}
             segments={segments}
+            faceTimeline={faceTimeline}
             isPlaying={isPlaying}
             currentTime={currentTime}
             duration={duration}
