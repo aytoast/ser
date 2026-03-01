@@ -9,8 +9,8 @@ import cors from "cors";
 const PORT = Number(process.env.PORT) || 3000;
 const MODEL_URL = (process.env.MODEL_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
-const TRANSCRIBE_TIMEOUT_MS = 5 * 60 * 1000;   // 5 min
-const DIARIZE_TIMEOUT_MS = 10 * 60 * 1000;      // 10 min (diarization is slower)
+const TRANSCRIBE_TIMEOUT_MS = 30 * 60 * 1000;   // 30 min (CPU inference is slow)
+const DIARIZE_TIMEOUT_MS   = 60 * 60 * 1000;    // 60 min (CPU: ~50s audio/min)
 
 const upload = multer({
   storage: multer.memoryStorage(),
