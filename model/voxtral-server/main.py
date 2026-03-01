@@ -409,7 +409,7 @@ def _transcribe(audio_array: np.ndarray) -> str:
         t0 = time.perf_counter()
         conversation = [{"role": "user", "content": [{"type": "audio", "audio": audio_array}]}]
         inputs = processor.apply_chat_template(
-            conversation, return_tensors="pt", tokenize=True, add_generation_prompt=True
+            conversation, return_tensors="pt", tokenize=True
         )
         print(f"[_transcribe] apply_chat_template OK {(time.perf_counter()-t0)*1000:.0f}ms keys={list(inputs.keys())}", flush=True)
     except Exception:
