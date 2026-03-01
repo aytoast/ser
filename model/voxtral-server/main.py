@@ -64,6 +64,8 @@ def _get_pyannote_pipeline():
         )
         if torch.cuda.is_available():
             pipeline = pipeline.to(torch.device("cuda"))
+        elif torch.backends.mps.is_available():
+            pipeline = pipeline.to(torch.device("mps"))
         _pyannote_pipeline = pipeline
         print("[voxtral] pyannote speaker-diarization-3.1 loaded")
     except Exception as e:
@@ -79,6 +81,17 @@ async def lifespan(app: FastAPI):
     _check_ffmpeg()
     print(f"[voxtral] ffmpeg: {shutil.which('ffmpeg')}")
 
+    if torch.cuda.is_available():
+        _device = torch.device("cuda")
+        _dtype = torch.bfloat16
+    elif torch.backends.mps.is_available():
+        _device = torch.device("mps")
+        _dtype = torch.float16   # MPS does not support bfloat16
+    else:
+        _device = torch.device("cpu")
+        _dtype = torch.float32
+    print(f"[voxtral] Device: {_device}  dtype: {_dtype}")
+
     print(f"[voxtral] Loading model: {REPO_ID} (first run may download ~8–16GB)...")
     try:
         from transformers import (
@@ -87,16 +100,30 @@ async def lifespan(app: FastAPI):
         )
         processor = AutoProcessor.from_pretrained(REPO_ID)
         model = VoxtralRealtimeForConditionalGeneration.from_pretrained(
-            REPO_ID, device_map="auto", torch_dtype=torch.bfloat16
-        )
+            REPO_ID, torch_dtype=_dtype
+        ).to(_device)
         model.eval()
-        print(f"[voxtral] Model loaded: {REPO_ID}")
+        print(f"[voxtral] Model loaded: {REPO_ID} on {_device}")
     except Exception as e:
         raise RuntimeError(
             f"Model load failed: {e}\n"
             "Ensure deps are installed: pip install -r requirements.txt\n"
             "And sufficient VRAM (recommended ≥16GB) or use CPU (slower)."
         ) from e
+
+    # Warm-up: run one silent dummy inference to pre-compile MPS Metal shaders.
+    # Without this the first real request pays a ~15s compilation penalty.
+    print("[voxtral] Warming up MPS shaders (dummy inference)...")
+    try:
+        sr = processor.feature_extractor.sampling_rate
+        dummy = np.zeros(sr, dtype=np.float32)  # 1 second of silence
+        with torch.inference_mode():
+            dummy_inputs = processor(dummy, return_tensors="pt")
+            dummy_inputs = dummy_inputs.to(_device, dtype=_dtype)
+            model.generate(**dummy_inputs, max_new_tokens=1)
+        print("[voxtral] Warm-up complete — first request will be fast")
+    except Exception as e:
+        print(f"[voxtral] Warm-up skipped: {e}")
 
     yield
 
@@ -197,137 +224,56 @@ def _validate_upload(contents: bytes) -> None:
         )
 
 
-# ─── Speaker diarization helpers ───────────────────────────────────────────────
+# ─── Segmentation helpers ──────────────────────────────────────────────────────
 
-def _vad_split(audio: np.ndarray, sr: int) -> list[tuple[int, int]]:
-    """Split audio on silence, merge gaps < 0.8 s, filter segments < 0.5 s.
-    Returns list of (start_sample, end_sample) tuples.
+def _vad_segment(audio: np.ndarray, sr: int) -> list[tuple[int, int]]:
+    """Split audio into speech segments by silence detection.
+    Merges gaps < 0.5 s (intra-phrase pauses) and drops segments < 0.3 s.
+    Returns list of (start_sample, end_sample).
     """
     intervals = librosa.effects.split(audio, top_db=28, frame_length=2048, hop_length=512)
     if len(intervals) == 0:
         return [(0, len(audio))]
 
-    # Merge intervals with gap < 0.8 s
     merged: list[list[int]] = [[int(intervals[0][0]), int(intervals[0][1])]]
     for s, e in intervals[1:]:
-        if (int(s) - merged[-1][1]) / sr < 0.8:
+        if (int(s) - merged[-1][1]) / sr < 0.3:
             merged[-1][1] = int(e)
         else:
             merged.append([int(s), int(e)])
 
-    # Filter very short segments
-    result = [(s, e) for s, e in merged if (e - s) / sr >= 0.4]
+    result = [(s, e) for s, e in merged if (e - s) / sr >= 0.3]
     return result if result else [(0, len(audio))]
 
 
-def _extract_mfcc_features(segments: list[tuple[int, int]], audio: np.ndarray, sr: int) -> np.ndarray:
-    """Extract normalised MFCC feature matrix (one row per segment)."""
-    from sklearn.preprocessing import StandardScaler
-
-    rows = []
-    for s, e in segments:
-        chunk = audio[s:e]
-        if len(chunk) < 512:
-            rows.append(np.zeros(40))
-            continue
-        mfcc = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=20)
-        rows.append(np.concatenate([mfcc.mean(axis=1), mfcc.std(axis=1)]))
-    X = np.array(rows)
-    return StandardScaler().fit_transform(X)
-
-
-def _auto_num_speakers(X: np.ndarray, max_speakers: int = 8) -> int:
-    """Pick the number of speakers that maximises silhouette score (k=2..max_k)."""
-    from sklearn.cluster import KMeans
-    from sklearn.metrics import silhouette_score
-
-    max_k = min(max_speakers, len(X))
-    if max_k < 2:
-        return 1
-
-    best_k, best_score = 2, -1.0
-    for k in range(2, max_k + 1):
-        labels = KMeans(n_clusters=k, random_state=42, n_init=10).fit_predict(X)
-        if len(set(labels)) < 2:
-            continue
-        score = float(silhouette_score(X, labels))
-        print(f"[voxtral]   silhouette k={k}: {score:.4f}")
-        if score > best_score:
-            best_score, best_k = score, k
-
-    print(f"[voxtral] auto-detected {best_k} speaker(s) (silhouette={best_score:.4f})")
-    return best_k
-
-
-def _cluster_speakers(
-    segments: list[tuple[int, int]],
-    audio: np.ndarray,
-    sr: int,
-    n_speakers: int,          # 0 = auto-detect
-) -> list[int]:
-    """Assign speaker IDs to segments via MFCC + KMeans.
-    Pass n_speakers=0 to automatically detect the speaker count.
-    Falls back to alternating labels if sklearn unavailable or clustering fails.
+def _segments_from_vad(audio: np.ndarray, sr: int) -> tuple[list[dict], str]:
+    """Segment audio by silence, assign all segments to SPEAKER_00.
+    Returns (segments, method_name).
     """
-    if len(segments) <= 1:
-        return [0] * len(segments)
-
-    try:
-        from sklearn.cluster import KMeans
-
-        X = _extract_mfcc_features(segments, audio, sr)
-
-        if n_speakers == 0:
-            n_speakers = _auto_num_speakers(X)
-
-        n_speakers = min(n_speakers, len(segments))
-        labels = KMeans(n_clusters=n_speakers, random_state=42, n_init=10).fit_predict(X)
-        return [int(l) for l in labels]
-    except Exception as e:
-        print(f"[voxtral] MFCC clustering failed: {e} — using alternating labels")
-        k = max(1, n_speakers)
-        return [i % k for i in range(len(segments))]
+    intervals = _vad_segment(audio, sr)
+    segs = [
+        {"speaker": "SPEAKER_00", "start": round(s / sr, 3), "end": round(e / sr, 3)}
+        for s, e in intervals
+    ]
+    print(f"[voxtral] VAD segmentation: {len(segs)} segment(s)")
+    return segs, "vad"
 
 
-def _segments_from_pyannote(wav_path: str) -> Optional[list[dict]]:
-    """Run pyannote pipeline and return raw segments. Returns None if unavailable."""
-    pipeline = _get_pyannote_pipeline()
-    if pipeline is None:
-        return None
-    try:
-        diarization = pipeline(wav_path)
-        segs = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
-            segs.append({
-                "speaker": speaker,
-                "start": round(turn.start, 3),
-                "end": round(turn.end, 3),
-            })
-        return segs if segs else None
-    except Exception as e:
-        print(f"[voxtral] pyannote inference failed: {e}")
-        return None
-
-
-def _segments_from_vad(audio: np.ndarray, sr: int, n_speakers: int) -> list[dict]:
-    """Fallback: VAD split + MFCC speaker clustering."""
-    intervals = _vad_split(audio, sr)
-    labels = _cluster_speakers(intervals, audio, sr, n_speakers)
-    segs = []
-    for (s, e), spk in zip(intervals, labels):
-        segs.append({
-            "speaker": f"SPEAKER_{spk:02d}",
-            "start": round(s / sr, 3),
-            "end": round(e / sr, 3),
-        })
-    return segs
+def _tokenize_text(text: str) -> list[str]:
+    """Split text into tokens. For CJK text (no spaces), split by character.
+    For space-separated languages, split by whitespace."""
+    tokens = text.split()
+    # If no spaces found (e.g. Chinese/Japanese), split by character instead
+    if len(tokens) <= 1 and len(text) > 1:
+        return list(text)
+    return tokens
 
 
 def _distribute_text(full_text: str, segs: list[dict]) -> list[dict]:
-    """Proportionally distribute transcription words across segments by duration."""
-    words = full_text.split()
-    total_words = len(words)
-    if not words or not segs:
+    """Proportionally distribute transcription tokens across segments by duration."""
+    tokens = _tokenize_text(full_text)
+    total_tokens = len(tokens)
+    if not tokens or not segs:
         return [{**s, "text": ""} for s in segs]
 
     total_dur = sum(s["end"] - s["start"] for s in segs)
@@ -335,18 +281,21 @@ def _distribute_text(full_text: str, segs: list[dict]) -> list[dict]:
         result = [{**segs[0], "text": full_text}]
         return result + [{**s, "text": ""} for s in segs[1:]]
 
+    is_cjk = len(full_text.split()) <= 1 and len(full_text) > 1
+    sep = "" if is_cjk else " "
+
     result: list[dict] = []
-    word_idx = 0
+    token_idx = 0
     for i, seg in enumerate(segs):
         dur = seg["end"] - seg["start"]
         frac = dur / total_dur
-        n = round(frac * total_words)
+        n = round(frac * total_tokens)
         if i == len(segs) - 1:
-            chunk = words[word_idx:]
+            chunk = tokens[token_idx:]
         else:
-            chunk = words[word_idx: word_idx + max(1, n)]
-        result.append({**seg, "text": " ".join(chunk)})
-        word_idx += len(chunk)
+            chunk = tokens[token_idx: token_idx + max(1, n)]
+        result.append({**seg, "text": sep.join(chunk)})
+        token_idx += len(chunk)
     return result
 
 
@@ -459,10 +408,10 @@ async def transcribe(audio: UploadFile = File(...)):
             except OSError:
                 pass
 
-    with torch.no_grad():
+    with torch.inference_mode():
         inputs = processor(audio_array, return_tensors="pt")
         inputs = inputs.to(model.device, dtype=model.dtype)
-        outputs = model.generate(**{k: v for k, v in inputs.items()})
+        outputs = model.generate(**{k: v for k, v in inputs.items()}, max_new_tokens=1024)
         decoded = processor.batch_decode(outputs, skip_special_tokens=True)
 
     text = (decoded[0] or "").strip()
@@ -474,20 +423,16 @@ async def transcribe(audio: UploadFile = File(...)):
 @app.post("/transcribe-diarize")
 async def transcribe_diarize(
     audio: UploadFile = File(...),
-    num_speakers: int = Query(default=0, ge=0, le=10, description="Expected number of speakers; 0 = auto-detect"),
 ):
     """
-    Upload audio → full transcription + speaker diarization.
+    Upload audio → transcription + VAD sentence segmentation + per-segment emotion analysis.
     Returns structured segments: [{id, speaker, start, end, text, emotion, valence, arousal}]
-
-    Speaker detection method (in priority order):
-      1. pyannote/speaker-diarization-3.1  (needs HF_TOKEN + pyannote.audio installed)
-      2. VAD silence split + MFCC KMeans clustering  (zero extra deps, always available)
+    All segments are labelled SPEAKER_00 (single-speaker mode).
     """
     req_start = time.perf_counter()
     req_id = f"diarize-{int(req_start * 1000)}"
     filename = audio.filename or "audio.wav"
-    print(f"[voxtral] {req_id} POST /transcribe-diarize filename={filename} num_speakers={num_speakers}")
+    print(f"[voxtral] {req_id} POST /transcribe-diarize filename={filename}")
 
     try:
         contents = await audio.read()
@@ -523,38 +468,18 @@ async def transcribe_diarize(
 
     # ── Step 1: full transcription via Voxtral ──────────────────────────────
     t0 = time.perf_counter()
-    with torch.no_grad():
+    with torch.inference_mode():
         inputs = processor(audio_array, return_tensors="pt")
         inputs = inputs.to(model.device, dtype=model.dtype)
-        outputs = model.generate(**{k: v for k, v in inputs.items()})
+        outputs = model.generate(**{k: v for k, v in inputs.items()}, max_new_tokens=1024)
         decoded = processor.batch_decode(outputs, skip_special_tokens=True)
     full_text = (decoded[0] or "").strip()
     print(f"[voxtral] {req_id} transcription done in {(time.perf_counter()-t0)*1000:.0f}ms text_len={len(full_text)}")
 
-    # ── Step 2: speaker diarization ─────────────────────────────────────────
+    # ── Step 2: VAD sentence segmentation ───────────────────────────────────
     t0 = time.perf_counter()
-    raw_segs: Optional[list[dict]] = None
-
-    # Try pyannote first (requires HF_TOKEN)
-    if _pyannote_available and HF_TOKEN:
-        wav_tmp = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                sf.write(f.name, audio_array, target_sr)
-                wav_tmp = f.name
-            raw_segs = _segments_from_pyannote(wav_tmp)
-        except Exception as e:
-            print(f"[voxtral] {req_id} pyannote error: {e}")
-        finally:
-            if wav_tmp and os.path.exists(wav_tmp):
-                os.unlink(wav_tmp)
-        if raw_segs:
-            print(f"[voxtral] {req_id} pyannote diarization done in {(time.perf_counter()-t0)*1000:.0f}ms segs={len(raw_segs)}")
-
-    # Fallback: VAD + MFCC clustering
-    if not raw_segs:
-        raw_segs = _segments_from_vad(audio_array, target_sr, num_speakers)
-        print(f"[voxtral] {req_id} VAD+MFCC diarization done in {(time.perf_counter()-t0)*1000:.0f}ms segs={len(raw_segs)}")
+    raw_segs, seg_method = _segments_from_vad(audio_array, target_sr)
+    print(f"[voxtral] {req_id} segmentation done in {(time.perf_counter()-t0)*1000:.0f}ms segs={len(raw_segs)}")
 
     # ── Step 3: distribute text proportionally ──────────────────────────────
     segs_with_text = _distribute_text(full_text, raw_segs)
@@ -587,5 +512,5 @@ async def transcribe_diarize(
         "duration": duration,
         "text": full_text,
         "filename": filename,
-        "diarization_method": "pyannote" if (raw_segs and _pyannote_available and HF_TOKEN) else "vad_mfcc",
+        "diarization_method": seg_method,
     }
