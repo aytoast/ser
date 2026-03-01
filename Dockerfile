@@ -39,6 +39,9 @@ RUN cd demo && NEXT_PUBLIC_API_URL="" npm run build \
     && cp -r public .next/standalone/public \
     && cp -r .next/static .next/standalone/.next/static
 
+# ─── FER model (MobileViT-XXS ONNX, 8-class facial emotion) ─────────────────
+COPY models/ models/
+
 # ─── Process manager + reverse proxy config ───────────────────────────────────
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY supervisord.conf /etc/supervisor/conf.d/app.conf

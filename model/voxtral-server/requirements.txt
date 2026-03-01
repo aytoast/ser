@@ -1,4 +1,4 @@
-# Evoxtral API proxy — calls external Modal API for inference (no local model)
+# Evoxtral API proxy + FER (facial emotion recognition)
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9
@@ -6,3 +6,6 @@ httpx>=0.27.0
 librosa>=0.10.0
 soundfile>=0.12.0
 numpy>=1.24.0
+# FER inference
+onnxruntime>=1.16.0
+opencv-python-headless>=4.8.0
