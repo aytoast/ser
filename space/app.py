@@ -8,7 +8,7 @@ from transformers import VoxtralForConditionalGeneration, AutoProcessor
 from peft import PeftModel
 
 MODEL_ID = "mistralai/Voxtral-Mini-3B-2507"
-ADAPTER_ID = "YongkangZOU/evoxtral-lora"
+ADAPTER_ID = "YongkangZOU/evoxtral-rl"
 
 # Load model on CPU at startup, ZeroGPU moves to GPU on demand
 print("Loading model...")
