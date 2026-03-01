@@ -687,41 +687,72 @@ function StudioContent() {
     }
   }, [sessionId])
 
-  // Automatic processing for pending sessions
+  // Automatic processing for pending sessions.
+  // Uses async job polling: POST returns {job_id} immediately, then GET /api/job/:id
+  // until done — avoids HF Spaces ~3 min proxy timeout during long CPU inference.
   useEffect(() => {
     if (!session || processingRef.current || processError) return
 
-    // If we have a file but no segments, it's a pending session
     if (session.file && session.data.segments.length === 0) {
-      processingRef.current = true  // synchronous guard — prevents re-entry before state update commits
+      processingRef.current = true
       const process = async () => {
         setIsProcessing(true)
         setProcessError(null)
         try {
+          // 1. Submit job — server responds immediately with job_id (202)
           const formData = new FormData()
           formData.append("audio", session.file!, session.filename)
 
-          const res = await fetch(`${API_BASE}/api/transcribe-diarize`, {
+          const submitRes = await fetch(`${API_BASE}/api/transcribe-diarize`, {
             method: "POST",
             body: formData,
           })
 
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}))
-            throw new Error(errData.error ?? "Processing failed")
+          if (!submitRes.ok) {
+            const errData = await submitRes.json().catch(() => ({}))
+            throw new Error(errData.error ?? "Submit failed")
           }
 
-          const data = await res.json() as DiarizeResult
-          updateSession(session.id, data)
+          const { job_id } = await submitRes.json() as { job_id: string }
 
-          // Re-fetch to update local state and trigger re-render
+          // 2. Poll until done (every 3s)
+          const POLL_INTERVAL = 3000
+          const MAX_POLLS = 60 * 20  // 60 min max
+          let polls = 0
+
+          const data = await new Promise<DiarizeResult>((resolve, reject) => {
+            const tick = async () => {
+              polls++
+              if (polls > MAX_POLLS) {
+                reject(new Error("Processing timed out after 60 minutes"))
+                return
+              }
+              try {
+                const pollRes = await fetch(`${API_BASE}/api/job/${job_id}`)
+                const pollData = await pollRes.json()
+                if (pollData.status === "done") {
+                  resolve(pollData.data as DiarizeResult)
+                } else if (pollData.status === "error") {
+                  reject(new Error(pollData.error ?? "Processing failed"))
+                } else {
+                  // still pending — keep polling
+                  setTimeout(tick, POLL_INTERVAL)
+                }
+              } catch (e) {
+                reject(e)
+              }
+            }
+            setTimeout(tick, POLL_INTERVAL)
+          })
+
+          updateSession(session.id, data)
           const updated = getSession(session.id)
           setSession(updated)
           if (updated?.data.segments && updated.data.segments.length > 0) {
             setActiveId(updated.data.segments[0].id)
           }
         } catch (e) {
-          processingRef.current = false  // allow retry on error
+          processingRef.current = false
           setProcessError(e instanceof Error ? e.message : "Request failed")
         } finally {
           setIsProcessing(false)
