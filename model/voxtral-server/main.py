@@ -17,7 +17,8 @@ import soundfile as sf
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-REPO_ID = os.environ.get("VOXTRAL_MODEL_ID", "mistralai/Voxtral-Mini-4B-Realtime-2602")
+REPO_ID = os.environ.get("VOXTRAL_MODEL_ID", "YongkangZOU/evoxtral-lora")
+BASE_MODEL_ID = "mistralai/Voxtral-Mini-3B-2507"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "100")) * 1024 * 1024
 HF_TOKEN = os.environ.get("HF_TOKEN")  # optional: enables pyannote speaker diarization
 
@@ -92,18 +93,19 @@ async def lifespan(app: FastAPI):
         _dtype = torch.bfloat16  # halves memory vs float32 (8 GB vs 16 GB); supported on modern x86
     print(f"[voxtral] Device: {_device}  dtype: {_dtype}")
 
-    print(f"[voxtral] Loading model: {REPO_ID} (first run may download ~8–16GB)...")
+    print(f"[voxtral] Loading base model: {BASE_MODEL_ID} ...")
+    print(f"[voxtral] Applying LoRA adapter: {REPO_ID} ...")
     try:
-        from transformers import (
-            VoxtralRealtimeForConditionalGeneration,
-            AutoProcessor,
-        )
-        processor = AutoProcessor.from_pretrained(REPO_ID)
-        model = VoxtralRealtimeForConditionalGeneration.from_pretrained(
-            REPO_ID, torch_dtype=_dtype
+        from transformers import VoxtralForConditionalGeneration, AutoProcessor
+        from peft import PeftModel
+
+        processor = AutoProcessor.from_pretrained(BASE_MODEL_ID)
+        base = VoxtralForConditionalGeneration.from_pretrained(
+            BASE_MODEL_ID, torch_dtype=_dtype
         ).to(_device)
+        model = PeftModel.from_pretrained(base, REPO_ID)
         model.eval()
-        print(f"[voxtral] Model loaded: {REPO_ID} on {_device}")
+        print(f"[voxtral] Model ready: {BASE_MODEL_ID} + LoRA {REPO_ID} on {_device}")
     except Exception as e:
         raise RuntimeError(
             f"Model load failed: {e}\n"
@@ -112,14 +114,15 @@ async def lifespan(app: FastAPI):
         ) from e
 
     # Warm-up: run one silent dummy inference to pre-compile MPS Metal shaders.
-    # Without this the first real request pays a ~15s compilation penalty.
-    print("[voxtral] Warming up MPS shaders (dummy inference)...")
+    print("[voxtral] Warming up (dummy inference)...")
     try:
-        sr = processor.feature_extractor.sampling_rate
+        sr = getattr(getattr(processor, "feature_extractor", None), "sampling_rate", 16000)
         dummy = np.zeros(sr, dtype=np.float32)  # 1 second of silence
+        conversation = [{"role": "user", "content": [{"type": "audio", "audio": dummy}]}]
         with torch.inference_mode():
-            dummy_inputs = processor(dummy, return_tensors="pt")
-            dummy_inputs = dummy_inputs.to(_device, dtype=_dtype)
+            dummy_inputs = processor.apply_chat_template(
+                conversation, return_tensors="pt", tokenize=True
+            ).to(_device)
             model.generate(**dummy_inputs, max_new_tokens=1)
         print("[voxtral] Warm-up complete — first request will be fast")
     except Exception as e:
@@ -381,6 +384,23 @@ def _analyze_emotion(chunk: np.ndarray, sr: int) -> dict:
         return {"emotion": "Neutral", "valence": 0.0, "arousal": 0.0}
 
 
+# ─── Inference helper ──────────────────────────────────────────────────────────
+
+def _transcribe(audio_array: np.ndarray) -> str:
+    """Run Voxtral-3B + LoRA inference via chat template; return transcribed text."""
+    conversation = [{"role": "user", "content": [{"type": "audio", "audio": audio_array}]}]
+    with torch.inference_mode():
+        inputs = processor.apply_chat_template(
+            conversation, return_tensors="pt", tokenize=True
+        ).to(model.device)
+        outputs = model.generate(**inputs, max_new_tokens=1024)
+        text = processor.decode(
+            outputs[0][inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True,
+        )
+    return text.strip()
+
+
 # ─── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.post("/transcribe")
@@ -405,7 +425,7 @@ async def transcribe(audio: UploadFile = File(...)):
     if suffix not in (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".webm"):
         suffix = ".wav"
 
-    target_sr = processor.feature_extractor.sampling_rate
+    target_sr = getattr(getattr(processor, "feature_extractor", None), "sampling_rate", 16000)
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -421,13 +441,7 @@ async def transcribe(audio: UploadFile = File(...)):
             except OSError:
                 pass
 
-    with torch.inference_mode():
-        inputs = processor(audio_array, return_tensors="pt")
-        inputs = inputs.to(model.device, dtype=model.dtype)
-        outputs = model.generate(**{k: v for k, v in inputs.items()}, max_new_tokens=1024)
-        decoded = processor.batch_decode(outputs, skip_special_tokens=True)
-
-    text = (decoded[0] or "").strip()
+    text = _transcribe(audio_array)
     total_ms = (time.perf_counter() - req_start) * 1000
     print(f"[voxtral] {req_id} done total={total_ms:.0f}ms text_len={len(text)}")
     return {"text": text, "words": [], "languageCode": None}
@@ -458,7 +472,7 @@ async def transcribe_diarize(
     if suffix not in (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".webm"):
         suffix = ".wav"
 
-    target_sr = processor.feature_extractor.sampling_rate
+    target_sr = getattr(getattr(processor, "feature_extractor", None), "sampling_rate", 16000)
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(contents)
@@ -481,12 +495,7 @@ async def transcribe_diarize(
 
     # ── Step 1: full transcription via Voxtral ──────────────────────────────
     t0 = time.perf_counter()
-    with torch.inference_mode():
-        inputs = processor(audio_array, return_tensors="pt")
-        inputs = inputs.to(model.device, dtype=model.dtype)
-        outputs = model.generate(**{k: v for k, v in inputs.items()}, max_new_tokens=1024)
-        decoded = processor.batch_decode(outputs, skip_special_tokens=True)
-    full_text = (decoded[0] or "").strip()
+    full_text = _transcribe(audio_array)
     print(f"[voxtral] {req_id} transcription done in {(time.perf_counter()-t0)*1000:.0f}ms text_len={len(full_text)}")
 
     # ── Step 2: VAD sentence segmentation ───────────────────────────────────
