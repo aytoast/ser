@@ -43,7 +43,15 @@ next-env.d.ts
 # dist
 /dist
 
+# data (audio files too large for git)
+data/audio/
+data/processed/
+
 # python
 __pycache__/
+*.pyc
 .venv/
 
+# claude code
+.claude/
+.mcp.json
