@@ -37,6 +37,12 @@ def _init_model() -> None:
     from transformers import VoxtralForConditionalGeneration, AutoProcessor
     from peft import PeftModel
 
+    # Use all available CPU cores for parallel compute
+    n_threads = os.cpu_count() or 4
+    torch.set_num_threads(n_threads)
+    torch.set_num_interop_threads(max(1, n_threads // 2))
+    print(f"[voxtral] torch threads={n_threads}, interop={max(1, n_threads // 2)}")
+
     # bfloat16 on both GPU and CPU — halves memory vs float32 (~6 GB vs ~12 GB)
     # PyTorch CPU supports bfloat16 natively since 1.12
     _model_dtype = torch.bfloat16
@@ -56,7 +62,11 @@ def _init_model() -> None:
     )
 
     print(f"[voxtral] Applying LoRA adapter {ADAPTER_ID} ...")
-    _model = PeftModel.from_pretrained(base_model, ADAPTER_ID)
+    peft_model = PeftModel.from_pretrained(base_model, ADAPTER_ID)
+
+    # Merge LoRA weights into base model and unload adapter — removes per-forward overhead
+    print(f"[voxtral] Merging LoRA weights into base model ...")
+    _model = peft_model.merge_and_unload()
     _model.eval()
 
     _model_device = next(_model.parameters()).device
@@ -86,8 +96,8 @@ def _transcribe_sync(wav_path: str) -> str:
         for k, v in inputs.items()
     }
 
-    with torch.no_grad():
-        output_ids = _model.generate(**inputs, max_new_tokens=512, do_sample=False)
+    with torch.inference_mode():
+        output_ids = _model.generate(**inputs, max_new_tokens=448, do_sample=False)
 
     input_len = inputs["input_ids"].shape[1]
     text = _processor.tokenizer.decode(

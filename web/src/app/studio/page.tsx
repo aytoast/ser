@@ -147,14 +147,26 @@ function MergeButton() {
   )
 }
 
+const VIDEO_EXTS = new Set([".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm"])
+
+function isVideoFile(filename: string): boolean {
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase()
+  return VIDEO_EXTS.has(ext)
+}
+
 // --- RightPanel ---
 function RightPanel({
   filename,
+  audioUrl,
+  isVideo,
+  mediaRef,
   onToggle,
 }: {
   activeSegment: Segment | null
   audioUrl: string
   filename: string
+  isVideo: boolean
+  mediaRef: React.RefObject<HTMLVideoElement | null>
   isPlaying: boolean
   currentTime: number
   duration: number
@@ -162,10 +174,20 @@ function RightPanel({
 }) {
   return (
     <div className="flex flex-col h-full border-l border-border bg-background">
-      {/* Video Preview */}
-      <div className="aspect-video w-full bg-slate-950 flex items-center justify-center flex-shrink-0 relative group">
-        <NextImage src="/logo.svg" alt="Preview" width={48} height={48} className="opacity-10" />
-        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* Video / Audio Preview */}
+      <div className="aspect-video w-full bg-slate-950 flex items-center justify-center flex-shrink-0 relative group overflow-hidden">
+        {/* The media element lives here for both audio and video */}
+        <video
+          ref={mediaRef as React.RefObject<HTMLVideoElement>}
+          src={audioUrl || undefined}
+          preload="metadata"
+          className={isVideo && audioUrl ? "w-full h-full object-contain" : "hidden"}
+        />
+        {/* Placeholder shown for audio-only or when no file loaded */}
+        {(!isVideo || !audioUrl) && (
+          <NextImage src="/logo.svg" alt="Preview" width={48} height={48} className="opacity-10" />
+        )}
+        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/30">
           <Button variant="ghost" size="icon" className="text-white hover:bg-white/20" onClick={onToggle}>
             <Play size={24} weight="fill" />
           </Button>
@@ -324,7 +346,7 @@ function StudioContent() {
   const sessionId = searchParams.get("s")
   const router = useRouter()
 
-  const audioRef = useRef<HTMLAudioElement>(null)
+  const mediaRef = useRef<HTMLVideoElement>(null)
   // Ref-based guard: set synchronously before any await to prevent double-fetch
   // even when React re-runs the effect before setIsProcessing(true) is committed.
   const processingRef = useRef(false)
@@ -400,47 +422,39 @@ function StudioContent() {
   const activeSegment = segments.find(s => s.id === activeId) ?? segments[0] ?? null
 
   useEffect(() => {
-    const audio = audioRef.current
-    if (!audio) return
-    const onTime = () => setCurrentTime(audio.currentTime)
+    const media = mediaRef.current
+    if (!media) return
+    const onTime = () => setCurrentTime(media.currentTime)
     const onPlay = () => setIsPlaying(true)
     const onPause = () => setIsPlaying(false)
-    const onLoadedMetadata = () => {
-      // If session duration is 0 (pending), update it from audio metadata
-      if (duration === 0) {
-        // We could update the store here, but let's just use it locally for now
-      }
-    }
-    audio.addEventListener("timeupdate", onTime)
-    audio.addEventListener("play", onPlay)
-    audio.addEventListener("pause", onPause)
-    audio.addEventListener("loadedmetadata", onLoadedMetadata)
+    media.addEventListener("timeupdate", onTime)
+    media.addEventListener("play", onPlay)
+    media.addEventListener("pause", onPause)
     return () => {
-      audio.removeEventListener("timeupdate", onTime)
-      audio.removeEventListener("play", onPlay)
-      audio.removeEventListener("pause", onPause)
-      audio.removeEventListener("loadedmetadata", onLoadedMetadata)
+      media.removeEventListener("timeupdate", onTime)
+      media.removeEventListener("play", onPlay)
+      media.removeEventListener("pause", onPause)
     }
-  }, [audioUrl, duration])
+  }, [audioUrl])
+
+  const isVideo = isVideoFile(filename)
 
   const handleSegmentClick = (seg: Segment) => {
     setActiveId(seg.id)
-    if (audioRef.current && audioUrl) {
-      audioRef.current.currentTime = seg.start
+    if (mediaRef.current && audioUrl) {
+      mediaRef.current.currentTime = seg.start
     }
   }
 
   const togglePlay = () => {
-    const audio = audioRef.current
-    if (!audio || !audioUrl) return
-    if (isPlaying) audio.pause()
-    else audio.play()
+    const media = mediaRef.current
+    if (!media || !audioUrl) return
+    if (isPlaying) media.pause()
+    else media.play()
   }
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
-      {/* Hidden audio element */}
-      <audio ref={audioRef} src={audioUrl || undefined} preload="metadata" className="hidden" />
 
       {/* Top Bar */}
       <Navbar
@@ -544,6 +558,8 @@ function StudioContent() {
             activeSegment={activeSegment}
             audioUrl={audioUrl}
             filename={filename}
+            isVideo={isVideo}
+            mediaRef={mediaRef}
             isPlaying={isPlaying}
             currentTime={currentTime}
             duration={duration}
