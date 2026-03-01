@@ -388,16 +388,33 @@ def _analyze_emotion(chunk: np.ndarray, sr: int) -> dict:
 
 def _transcribe(audio_array: np.ndarray) -> str:
     """Run Voxtral-3B + LoRA inference via chat template; return transcribed text."""
+    import sys
+    audio_sec = round(len(audio_array) / 16000, 2)
+    print(f"[_transcribe] audio={audio_sec}s  device={model.device}  dtype={next(model.parameters()).dtype}", flush=True)
+
+    t0 = time.perf_counter()
     conversation = [{"role": "user", "content": [{"type": "audio", "audio": audio_array}]}]
+    inputs = processor.apply_chat_template(conversation, return_tensors="pt", tokenize=True)
+    print(f"[_transcribe] apply_chat_template done in {(time.perf_counter()-t0)*1000:.0f}ms  keys={list(inputs.keys())}", flush=True)
+
+    t0 = time.perf_counter()
+    inputs = inputs.to(model.device)
+    print(f"[_transcribe] .to(device) done in {(time.perf_counter()-t0)*1000:.0f}ms", flush=True)
+
+    input_len = inputs["input_ids"].shape[1]
+    print(f"[_transcribe] input_ids shape={inputs['input_ids'].shape}  calling model.generate ...", flush=True)
+
+    t0 = time.perf_counter()
     with torch.inference_mode():
-        inputs = processor.apply_chat_template(
-            conversation, return_tensors="pt", tokenize=True
-        ).to(model.device)
         outputs = model.generate(**inputs, max_new_tokens=1024)
-        text = processor.decode(
-            outputs[0][inputs["input_ids"].shape[1]:],
-            skip_special_tokens=True,
-        )
+    gen_ms = (time.perf_counter() - t0) * 1000
+    new_tokens = outputs.shape[1] - input_len
+    print(f"[_transcribe] model.generate done in {gen_ms:.0f}ms  new_tokens={new_tokens}", flush=True)
+
+    t0 = time.perf_counter()
+    text = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+    print(f"[_transcribe] decode done in {(time.perf_counter()-t0)*1000:.0f}ms  text={repr(text[:120])}", flush=True)
+
     return text.strip()
 
 
