@@ -1,5 +1,5 @@
 # Ethos Studio — HuggingFace Spaces Docker deployment
-# Architecture: Python model (8000) + Node proxy (3000) + Next.js (3030)
+# Architecture: Python API (8000) + Node proxy (3000) + Next.js (3030)
 #               nginx on port 7860 routes traffic between layers
 
 FROM python:3.11-slim
@@ -16,26 +16,26 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 
 WORKDIR /app
 
-# ─── Model layer: Python dependencies ────────────────────────────────────────
-COPY model/voxtral-server/requirements.txt model/voxtral-server/requirements.txt
-RUN pip install --no-cache-dir -r model/voxtral-server/requirements.txt
+# ─── API layer: Python dependencies ──────────────────────────────────────────
+COPY api/requirements.txt api/requirements.txt
+RUN pip install --no-cache-dir -r api/requirements.txt
 
-COPY model/voxtral-server/ model/voxtral-server/
+COPY api/ api/
 
 # ─── Proxy server: Node dependencies ─────────────────────────────────────────
-COPY demo/server/package*.json demo/server/
-RUN cd demo/server && npm ci --omit=dev
+COPY proxy/package*.json proxy/
+RUN cd proxy && npm ci --omit=dev
 
-COPY demo/server/ demo/server/
+COPY proxy/ proxy/
 
 # ─── Frontend: Next.js build ──────────────────────────────────────────────────
-COPY demo/package*.json demo/
-RUN cd demo && npm ci
+COPY web/package*.json web/
+RUN cd web && npm ci
 
-COPY demo/ demo/
+COPY web/ web/
 
 # Build with empty API base → browser uses relative paths → nginx routes /api/*
-RUN cd demo && NEXT_PUBLIC_API_URL="" npm run build \
+RUN cd web && NEXT_PUBLIC_API_URL="" npm run build \
     && cp -r public .next/standalone/public \
     && cp -r .next/static .next/standalone/.next/static
 
