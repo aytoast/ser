@@ -33,12 +33,45 @@ Evoxtral:
 
 ## Evaluation Results
 
+Evaluated on 50 held-out test samples. Full benchmark (Evoxtral-Bench) with 7 metrics:
+
+### Core Metrics
+
 | Metric | Base Voxtral | Evoxtral (finetuned) | Improvement |
 |--------|-------------|---------------------|-------------|
 | **WER** (Word Error Rate) | 6.64% | **4.47%** | 32.7% better |
-| **Tag F1** (Expressive Tag Accuracy) | 22.0% | **67.2%** | 3x better |
+| **CER** (Character Error Rate) | 2.72% | **1.23%** | 54.8% better |
+| **Tag F1** | 22.0% | **67.2%** | 3.1x better |
+| **Tag Precision** | 22.0% | **67.4%** | 3.1x better |
+| **Tag Recall** | 22.0% | **69.4%** | 3.2x better |
+| **Emphasis F1** (CAPS words) | 42.0% | **84.0%** | 2.0x better |
+| **Tag Hallucination Rate** | 0.0% | 19.3% | trade-off |
 
-Evaluated on 50 held-out test samples. The finetuned model dramatically improves expressive tag generation while also improving raw transcription accuracy.
+The finetuned model dramatically improves expressive tag generation and emphasis detection while also improving raw transcription accuracy. The 19.3% hallucination rate indicates the model occasionally predicts tags not present in the reference — a known trade-off when optimizing for tag recall.
+
+### Per-Tag F1 Breakdown
+
+| Tag | F1 | Precision | Recall | Support |
+|-----|----|-----------|--------|---------|
+| `[sighs]` | **1.000** | 1.000 | 1.000 | 9 |
+| `[gasps]` | **0.957** | 1.000 | 0.917 | 12 |
+| `[clears throat]` | 0.889 | 0.800 | 1.000 | 8 |
+| `[stammers]` | 0.889 | 0.800 | 1.000 | 8 |
+| `[pause]` | 0.885 | 0.852 | 0.920 | 25 |
+| `[laughs]` | 0.800 | 0.769 | 0.833 | 12 |
+| `[nervous]` | 0.800 | 0.833 | 0.769 | 13 |
+| `[crying]` | 0.750 | 1.000 | 0.600 | 5 |
+| `[sad]` | 0.667 | 0.600 | 0.750 | 4 |
+| `[angry]` | 0.667 | 1.000 | 0.500 | 2 |
+| `[whispers]` | 0.636 | 0.778 | 0.538 | 13 |
+| `[excited]` | 0.615 | 0.500 | 0.800 | 5 |
+| `[frustrated]` | 0.444 | 0.333 | 0.667 | 3 |
+| `[shouts]` | 0.400 | 0.500 | 0.333 | 3 |
+| `[calm]` | 0.200 | 0.250 | 0.167 | 6 |
+| `[confused]` | 0.000 | 0.000 | 0.000 | 1 |
+| `[scared]` | 0.000 | 0.000 | 0.000 | 1 |
+
+**Best performing**: Tags with clear acoustic signals ([sighs], [gasps], [clears throat]) achieve near-perfect F1. **Weakest**: Subtle emotional states ([calm], [confused], [scared]) with low training support.
 
 ## Training Details
 
@@ -102,12 +135,24 @@ print(transcription)
 # [nervous] So... I was thinking maybe we could [clears throat] try that new restaurant downtown?
 ```
 
+## API
+
+A serverless API with Swagger UI is available on Modal:
+
+```bash
+curl -X POST https://yongkang-zou1999--evoxtral-api-evoxtralmodel-web.modal.run/transcribe \
+    -F "file=@audio.wav"
+```
+
+- [Swagger UI](https://yongkang-zou1999--evoxtral-api-evoxtralmodel-web.modal.run/docs)
+- [Live Demo (HF Space)](https://huggingface.co/spaces/YongkangZOU/evoxtral)
+
 ## W&B Tracking
 
 All training and evaluation runs are tracked on Weights & Biases:
 - [Training run](https://wandb.ai/yongkang-zou-ai/evoxtral/runs/t8ak7a20)
-- [Base model eval](https://wandb.ai/yongkang-zou-ai/evoxtral/runs/f9l2zwvs)
-- [Finetuned model eval](https://wandb.ai/yongkang-zou-ai/evoxtral/runs/b32c74im)
+- [Base model eval](https://wandb.ai/yongkang-zou-ai/evoxtral/runs/bvqa4ioo)
+- [Finetuned model eval](https://wandb.ai/yongkang-zou-ai/evoxtral/runs/ayx4ldyd)
 - [Project dashboard](https://wandb.ai/yongkang-zou-ai/evoxtral)
 
 ## Supported Tags
@@ -119,7 +164,8 @@ The model can produce any tag from the ElevenLabs v3 expressive tag set, includi
 ## Limitations
 
 - Trained on synthetic (TTS-generated) audio, not natural speech recordings
-- Tag F1 of 67.2% means ~1/3 of tags may be missed or misplaced
+- 19.3% tag hallucination rate — model occasionally predicts tags not in the reference
+- Rare/subtle tags ([calm], [confused], [scared]) have low accuracy due to limited training examples
 - English only
 - Best results on conversational and emotionally expressive speech
 
