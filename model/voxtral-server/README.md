@@ -1,6 +1,6 @@
 # Voxtral Speech-to-Text (Model Layer)
 
-Local inference API based on [mistralai/Voxtral-Mini-4B-Realtime-2602](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602). Provides transcription, speaker diarization, and per-segment emotion analysis.
+Local inference API based on [mistralai/Voxtral-Mini-4B-Realtime-2602](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602). Provides transcription, VAD sentence segmentation, and per-segment emotion analysis.
 
 **Requirements**: Python 3.10+; GPU ≥16GB VRAM recommended; system **ffmpeg** (e.g. `brew install ffmpeg`).
 
@@ -17,12 +17,6 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Default port: **8000**. First run may download the model (~8–16GB). Wait for `Application startup complete`.
-
-Optional: set `HF_TOKEN` for real speaker diarization via pyannote:
-
-```bash
-export HF_TOKEN=hf_...
-```
 
 ---
 
@@ -60,19 +54,17 @@ Simple transcription (no diarization).
 
 ### POST /transcribe-diarize
 
-Full pipeline: transcription + speaker diarization + emotion analysis per segment.
+Full pipeline: transcription + VAD sentence segmentation + per-segment emotion analysis.
+All segments are labelled `SPEAKER_00` (single-speaker mode).
 
 | | |
 |--|--|
 | **Content-Type** | `multipart/form-data` |
 | **Body** | `audio` — audio file (required) |
-| **Query** | `num_speakers` (int, 0–10, default 0) — speaker count hint; 0 = auto-detect |
 | **Formats** | wav, mp3, flac, ogg, m4a, webm |
 | **Max size** | `MAX_UPLOAD_MB` (default 100 MB) |
 
-Speaker detection (priority order):
-1. **pyannote/speaker-diarization-3.1** — requires `HF_TOKEN` env var + `pyannote.audio` installed
-2. **VAD + MFCC KMeans** — silence-split fallback; always available
+Segmentation: silence gaps ≥ 0.3 s create a new segment; gaps < 0.3 s are merged (intra-phrase pauses). Text is distributed to segments by sentence boundaries (punctuation marks), with character-level fallback.
 
 **Response (200)**
 
@@ -82,22 +74,22 @@ Speaker detection (priority order):
     {
       "id": 1,
       "speaker": "SPEAKER_00",
-      "start": 0.0,
-      "end": 4.2,
-      "text": "Hello, how are you?",
-      "emotion": "neutral",
-      "valence": 0.1,
-      "arousal": 0.2
+      "start": 0.96,
+      "end": 3.23,
+      "text": "你好嗎?我要是出軌了你會怎麼辦?",
+      "emotion": "Frustrated",
+      "valence": -0.33,
+      "arousal": 0.28
     }
   ],
-  "duration": 42.3,
+  "duration": 5.65,
   "text": "full transcript",
   "filename": "audio.m4a",
-  "diarization_method": "vad_mfcc"
+  "diarization_method": "vad"
 }
 ```
 
-`diarization_method`: `"pyannote"` or `"vad_mfcc"`.
+`diarization_method`: `"vad"`.
 
 **Errors**
 
@@ -132,7 +124,6 @@ Speaker detection (priority order):
 |----------|---------|-------------|
 | `VOXTRAL_MODEL_ID` | `mistralai/Voxtral-Mini-4B-Realtime-2602` | Hugging Face model ID |
 | `MAX_UPLOAD_MB` | `100` | Max upload size in MB |
-| `HF_TOKEN` | _(unset)_ | Hugging Face token; enables pyannote speaker diarization |
 
 ---
 
@@ -142,11 +133,8 @@ Speaker detection (priority order):
 # Simple transcription
 curl -X POST http://127.0.0.1:8000/transcribe -F "audio=@audio.m4a"
 
-# Transcription + diarization + emotion analysis
+# Transcription + VAD segmentation + emotion analysis
 curl -X POST http://127.0.0.1:8000/transcribe-diarize -F "audio=@audio.m4a"
-
-# With speaker count hint
-curl -X POST "http://127.0.0.1:8000/transcribe-diarize?num_speakers=2" -F "audio=@audio.m4a"
 
 # Health
 curl -s http://127.0.0.1:8000/health
