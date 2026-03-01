@@ -50,7 +50,7 @@ def _init_model() -> None:
     print(f"[voxtral] Loading base model {MODEL_ID} (dtype={_model_dtype}) ...")
     base_model = VoxtralForConditionalGeneration.from_pretrained(
         MODEL_ID,
-        torch_dtype=_model_dtype,
+        dtype=_model_dtype,
         device_map=device_map,
     )
 
