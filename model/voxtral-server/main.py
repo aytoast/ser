@@ -144,6 +144,18 @@ app.add_middleware(
 )
 
 
+@app.get("/debug-inference")
+async def debug_inference():
+    """Run a 1-second silent inference and return full result or traceback."""
+    import traceback as tb
+    try:
+        dummy = np.zeros(16000, dtype=np.float32)
+        text = _transcribe(dummy)
+        return {"status": "ok", "text": text}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "traceback": tb.format_exc()}
+
+
 @app.get("/health")
 async def health():
     """Health check: service and dependency status."""
