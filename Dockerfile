@@ -17,6 +17,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 WORKDIR /app
 
 # ─── API layer: Python dependencies ──────────────────────────────────────────
+# CACHE_BUST: force pip layer rebuild when bumping onnxruntime version
+ARG CACHE_BUST=20260302
 COPY api/requirements.txt api/requirements.txt
 RUN pip install --no-cache-dir -r api/requirements.txt
 
