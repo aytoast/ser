@@ -13,6 +13,6 @@ accelerate>=1.0.0
 mistral-common
 safetensors
 sentencepiece
-# FER inference
-onnxruntime>=1.16.0
+# FER inference — model uses ONNX IR v10, requires ort>=1.19.0
+onnxruntime>=1.19.0
 opencv-python-headless>=4.8.0
