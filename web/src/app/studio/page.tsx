@@ -80,20 +80,27 @@ function SegmentRow({
   active,
   speaker,
   onClick,
+  containerRef,
 }: {
   seg: Segment
   active: boolean
   speaker: SpeakerInfo
   onClick: () => void
+  containerRef?: (el: HTMLDivElement | null) => void
 }) {
   return (
     <div
+      ref={containerRef}
       onClick={onClick}
       className={cn(
-        "flex items-start gap-12 group transition-all duration-300 cursor-pointer py-4 rounded-lg px-4 border border-transparent",
-        active ? "bg-accent/[0.04] border-accent/10" : "hover:bg-muted/30"
+        "relative flex items-start gap-12 group transition-all duration-300 cursor-pointer py-4 rounded-lg px-4 border",
+        active ? "bg-primary/[0.03] border-primary/15" : "border-transparent hover:bg-muted/30"
       )}
     >
+      {/* Active left accent bar */}
+      {active && (
+        <div className="absolute left-0 top-3 bottom-3 w-[3px] bg-primary/50 rounded-full transition-all duration-300" />
+      )}
       {/* Speaker */}
       <div className="w-32 flex items-center gap-3 shrink-0 pt-1">
         <Avatar className="size-6 ring-2 ring-background border border-border/20">
@@ -329,6 +336,8 @@ function TimelineBar({
   duration,
   currentTime,
   speakerMap,
+  activeSegId,
+  onSeek,
 }: {
   isPlaying: boolean
   onToggle: () => void
@@ -336,8 +345,17 @@ function TimelineBar({
   duration: number
   currentTime: number
   speakerMap: Record<string, SpeakerInfo>
+  activeSegId: number
+  onSeek: (time: number) => void
 }) {
   const speakers = Object.entries(speakerMap)
+
+  function handleTracksClick(e: React.MouseEvent<HTMLDivElement>) {
+    if (duration <= 0) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    onSeek(ratio * duration)
+  }
 
   return (
     <div className="border-t border-border bg-background flex-shrink-0">
@@ -368,8 +386,8 @@ function TimelineBar({
           </div>
         </div>
 
-        {/* Tracks Area */}
-        <div className="flex-1 relative overflow-hidden">
+        {/* Tracks Area — click anywhere to seek */}
+        <div className="flex-1 relative overflow-hidden cursor-pointer" onClick={handleTracksClick}>
           {/* Time Marks */}
           <div className="h-12 border-b border-border/40 flex items-center relative px-4">
             <Badge variant="secondary" className="bg-black text-white text-[10px] h-5 px-1.5 rounded-[4px] absolute left-4 z-10">0.00</Badge>
@@ -387,7 +405,13 @@ function TimelineBar({
                 {duration > 0 && segments.filter(s => s.speaker === id).map(seg => (
                   <div
                     key={seg.id}
-                    className={cn("absolute top-2 bottom-2 rounded-[6px] transition-opacity hover:opacity-80 cursor-alias", info.trackColor)}
+                    className={cn(
+                      "absolute top-2 bottom-2 rounded-[6px] transition-all duration-150",
+                      info.trackColor,
+                      seg.id === activeSegId
+                        ? "opacity-100 ring-1 ring-foreground/30 ring-inset"
+                        : "opacity-70 hover:opacity-90"
+                    )}
                     style={{
                       left: `${(seg.start / duration) * 100}%`,
                       width: `${Math.max(((seg.end - seg.start) / duration) * 100, 0.5)}%`,
@@ -401,9 +425,7 @@ function TimelineBar({
             {duration > 0 && (
               <div
                 className="absolute top-0 bottom-0 w-px bg-black z-20 pointer-events-none transition-all duration-75"
-                style={{
-                  left: (currentTime / duration) * 100 + "%"
-                }}
+                style={{ left: (currentTime / duration) * 100 + "%" }}
               />
             )}
           </div>
@@ -448,6 +470,8 @@ function StudioContent() {
   // Ref-based guard: set synchronously before any await to prevent double-fetch
   // even when React re-runs the effect before setIsProcessing(true) is committed.
   const processingRef = useRef(false)
+  // Per-segment DOM element refs for auto-scroll
+  const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map())
 
   const [session, setSession] = useState(() => sessionId ? getSession(sessionId) : null)
   const [activeId, setActiveId] = useState<number>(1)
@@ -537,6 +561,33 @@ function StudioContent() {
   }, [audioUrl])
 
   const isVideo = isVideoFile(filename)
+
+  // Update activeId based on current playback time
+  useEffect(() => {
+    if (!isPlaying) return
+    const seg = segments.find(s => currentTime >= s.start && currentTime < s.end)
+    if (seg && seg.id !== activeId) {
+      setActiveId(seg.id)
+    }
+  }, [currentTime, segments, isPlaying, activeId])
+
+  // Auto-scroll transcript to active segment whenever activeId changes
+  useEffect(() => {
+    const el = segmentRefs.current.get(activeId)
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" })
+    }
+  }, [activeId])
+
+  const handleSeek = (time: number) => {
+    if (mediaRef.current) {
+      mediaRef.current.currentTime = time
+      setCurrentTime(time)
+    }
+    // Immediately highlight the segment at the seeked time
+    const seg = segments.find(s => time >= s.start && time < s.end)
+    if (seg) setActiveId(seg.id)
+  }
 
   const handleSegmentClick = (seg: Segment) => {
     setActiveId(seg.id)
@@ -644,6 +695,10 @@ function StudioContent() {
                     active={seg.id === activeId}
                     speaker={speakerMap[seg.speaker]}
                     onClick={() => handleSegmentClick(seg)}
+                    containerRef={el => {
+                      if (el) segmentRefs.current.set(seg.id, el)
+                      else segmentRefs.current.delete(seg.id)
+                    }}
                   />
                 </React.Fragment>
               ))}
@@ -677,6 +732,8 @@ function StudioContent() {
         duration={duration}
         currentTime={currentTime}
         speakerMap={speakerMap}
+        activeSegId={activeId}
+        onSeek={handleSeek}
       />
     </div>
   )
