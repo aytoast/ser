@@ -37,6 +37,12 @@ def _init_model() -> None:
     from transformers import VoxtralForConditionalGeneration, AutoProcessor
     from peft import PeftModel
 
+    # Use all available CPU cores for parallel compute
+    n_threads = os.cpu_count() or 4
+    torch.set_num_threads(n_threads)
+    torch.set_num_interop_threads(max(1, n_threads // 2))
+    print(f"[voxtral] torch threads={n_threads}, interop={max(1, n_threads // 2)}")
+
     # bfloat16 on both GPU and CPU — halves memory vs float32 (~6 GB vs ~12 GB)
     # PyTorch CPU supports bfloat16 natively since 1.12
     _model_dtype = torch.bfloat16
@@ -56,7 +62,11 @@ def _init_model() -> None:
     )
 
     print(f"[voxtral] Applying LoRA adapter {ADAPTER_ID} ...")
-    _model = PeftModel.from_pretrained(base_model, ADAPTER_ID)
+    peft_model = PeftModel.from_pretrained(base_model, ADAPTER_ID)
+
+    # Merge LoRA weights into base model and unload adapter — removes per-forward overhead
+    print(f"[voxtral] Merging LoRA weights into base model ...")
+    _model = peft_model.merge_and_unload()
     _model.eval()
 
     _model_device = next(_model.parameters()).device
@@ -86,8 +96,8 @@ def _transcribe_sync(wav_path: str) -> str:
         for k, v in inputs.items()
     }
 
-    with torch.no_grad():
-        output_ids = _model.generate(**inputs, max_new_tokens=512, do_sample=False)
+    with torch.inference_mode():
+        output_ids = _model.generate(**inputs, max_new_tokens=448, do_sample=False)
 
     input_len = inputs["input_ids"].shape[1]
     text = _processor.tokenizer.decode(
@@ -181,10 +191,17 @@ def _fer_frame(img_bgr: np.ndarray) -> Optional[str]:
         return None
 
 
-def _fer_for_segments(video_path: str, segments: list[dict]) -> dict[int, str]:
-    """Extract ~1fps frames from video, run FER, return {segment_id: emotion}."""
+def _fer_for_segments(
+    video_path: str, segments: list[dict]
+) -> tuple[dict[int, str], dict[int, str]]:
+    """
+    Extract ~1fps frames from video, run FER.
+    Returns:
+      segment_emotions : {segment_id: majority_emotion}
+      timeline         : {second: emotion}  — per-second, for live panel
+    """
     if _fer_session is None:
-        return {}
+        return {}, {}
 
     frames_dir = tempfile.mkdtemp()
     try:
@@ -200,9 +217,10 @@ def _fer_for_segments(video_path: str, segments: list[dict]) -> dict[int, str]:
         frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".jpg"))
         if not frame_files:
             print("[voxtral] FER: no video frames extracted (audio-only?)")
-            return {}
+            return {}, {}
 
-        frame_emotions: dict[int, str] = {}
+        # Build per-second emotion map
+        timeline: dict[int, str] = {}
         for fname in frame_files:
             second = int(os.path.splitext(fname)[0]) - 1
             img = cv2.imread(os.path.join(frames_dir, fname))
@@ -210,21 +228,22 @@ def _fer_for_segments(video_path: str, segments: list[dict]) -> dict[int, str]:
                 continue
             emo = _fer_frame(img)
             if emo:
-                frame_emotions[second] = emo
+                timeline[second] = emo
 
-        result: dict[int, str] = {}
+        # Majority-vote per segment
+        segment_emotions: dict[int, str] = {}
         for seg in segments:
             start_s = int(seg["start"])
             end_s   = max(int(seg["end"]), start_s + 1)
-            emos    = [frame_emotions[s] for s in range(start_s, end_s) if s in frame_emotions]
+            emos    = [timeline[s] for s in range(start_s, end_s) if s in timeline]
             if emos:
-                result[seg["id"]] = Counter(emos).most_common(1)[0][0]
+                segment_emotions[seg["id"]] = Counter(emos).most_common(1)[0][0]
 
-        print(f"[voxtral] FER: {len(frame_files)} frames → {len(result)} segments with face emotion")
-        return result
+        print(f"[voxtral] FER: {len(frame_files)} frames → {len(segment_emotions)} segs, {len(timeline)} timeline pts")
+        return segment_emotions, timeline
     except Exception as e:
         print(f"[voxtral] FER extraction error: {e}")
-        return {}
+        return {}, {}
     finally:
         shutil.rmtree(frames_dir, ignore_errors=True)
 
@@ -532,13 +551,16 @@ async def transcribe_diarize(audio: UploadFile = File(...)):
     segs_with_text       = _distribute_text(full_text, raw_segs)
 
     # ── FER (video only) ─────────────────────────────────────────────────────
-    has_fer       = False
-    face_emotions: dict[int, str] = {}
+    has_fer              = False
+    face_emotions:  dict[int, str] = {}
+    fer_timeline:   dict[int, str] = {}
     if _is_video(filename) and _fer_session is not None:
         t0 = time.perf_counter()
-        face_emotions = await loop.run_in_executor(None, _fer_for_segments, tmp_path, raw_segs)
+        face_emotions, fer_timeline = await loop.run_in_executor(
+            None, _fer_for_segments, tmp_path, raw_segs
+        )
         has_fer = bool(face_emotions)
-        print(f"[voxtral] {req_id} FER done {(time.perf_counter()-t0)*1000:.0f}ms faces={len(face_emotions)}")
+        print(f"[voxtral] {req_id} FER done {(time.perf_counter()-t0)*1000:.0f}ms faces={len(face_emotions)} timeline={len(fer_timeline)}")
 
     if tmp_path and os.path.exists(tmp_path):
         try: os.unlink(tmp_path)
@@ -566,10 +588,13 @@ async def transcribe_diarize(audio: UploadFile = File(...)):
     print(f"[voxtral] {req_id} complete total={total_ms:.0f}ms segments={len(segments)} has_fer={has_fer}")
 
     return {
-        "segments":            segments,
-        "duration":            duration,
-        "text":                full_text,
-        "filename":            filename,
-        "diarization_method":  seg_method,
-        "has_video":           has_fer,
+        "segments":               segments,
+        "duration":               duration,
+        "text":                   full_text,
+        "filename":               filename,
+        "diarization_method":     seg_method,
+        "has_video":              has_fer,
+        # Per-second face emotion timeline for live playback panel
+        # Keys are strings (JSON), values are emotion labels e.g. "Happy"
+        "face_emotion_timeline":  {str(k): v for k, v in fer_timeline.items()},
     }
