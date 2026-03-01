@@ -1,30 +1,27 @@
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+# Ethos Studio — Emotional Speech Recognition
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/pages/building-your-application/deploying) for more details.
-
-
-# SER — Speech-to-Text
-
-Backend-only speech-to-text service using [Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602). No frontend: **Model layer** (Python) + **Server layer** (Node).
+Speech-to-text service with speaker diarization and per-segment emotion analysis, powered by [Voxtral Mini 4B](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602). Three-layer architecture: **Model** (Python) + **Server** (Node) + **Frontend** (Next.js).
 
 ## Architecture
 
 ```
-Client (curl / script / app)
-    → Server layer (Node, :3000)   POST /api/speech-to-text, GET /health
-        → Model layer (Python, :8000)   POST /transcribe, GET /health
+Browser (port 3030)  →  Server layer (Node, :3000)  →  Model layer (Python, :8000)
+      ↑ Studio UI            POST /api/speech-to-text          POST /transcribe
+      ↑ Upload dialog        POST /api/transcribe-diarize      POST /transcribe-diarize
+                             GET  /health                       GET  /health
 ```
 
 | Layer | Path | Role |
 |-------|------|------|
-| **Model** | `model/voxtral-server` | Voxtral inference; `POST /transcribe`, `GET /health` |
-| **Server** | `demo/server` | API entrypoint; proxies to Model; `POST /api/speech-to-text`, `GET /health` |
+| **Model** | `model/voxtral-server` | Voxtral inference, speaker diarization, emotion analysis |
+| **Server** | `demo/server` | API entrypoint; proxies to Model |
+| **Frontend** | `demo` | Next.js UI (upload, Studio editor, waveform, timeline) |
 
-See [demo/README.md](demo/README.md) for full API and usage; [model/voxtral-server/README.md](model/voxtral-server/README.md) for Model API.
+See [demo/README.md](demo/README.md) for full API and usage; [model/voxtral-server/README.md](model/voxtral-server/README.md) for the Model API.
 
 ## How to run
 
-**Requirements**: Python 3.10+, Node.js 18+, ffmpeg; GPU ≥16GB VRAM recommended for Model.
+**Requirements**: Python 3.10+, Node.js 18+, ffmpeg; GPU ≥16GB VRAM recommended.
 
 ### 1. Start Model layer (port 8000)
 
@@ -38,6 +35,12 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 Wait for `Application startup complete`. First run may download the model (~8–16GB).
 
+Optional: set `HF_TOKEN` for real speaker diarization via pyannote:
+
+```bash
+export HF_TOKEN=hf_...
+```
+
 ### 2. Start Server layer (port 3000)
 
 ```bash
@@ -46,9 +49,20 @@ npm install
 npm run dev
 ```
 
-### 3. Check
-  
+### 3. Start Frontend (port 3030)
+
+```bash
+cd demo
+npm install
+npm run dev
+```
+
+Open [http://localhost:3030](http://localhost:3030).
+
+### 4. Quick check
+
 ```bash
 curl -s http://localhost:3000/health
 curl -X POST http://localhost:3000/api/speech-to-text -F "audio=@/path/to/audio.m4a"
+curl -X POST http://localhost:3000/api/transcribe-diarize -F "audio=@/path/to/audio.m4a"
 ```
