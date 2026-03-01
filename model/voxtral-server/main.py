@@ -74,14 +74,17 @@ async def health():
 
 # ─── External API ──────────────────────────────────────────────────────────────
 
-async def _call_evoxtral(contents: bytes, filename: str) -> dict:
-    """Forward audio bytes to the external evoxtral API; return parsed JSON.
+async def _call_evoxtral(wav_path: str) -> dict:
+    """Send a WAV file to the external evoxtral API; return parsed JSON.
     Response: {"transcription": "...[laughs]...", "language": "en", "model": "..."}
+    Always expects a local WAV file path (already converted/validated).
     """
+    with open(wav_path, "rb") as f:
+        wav_bytes = f.read()
     async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
             f"{EVOXTRAL_API}/transcribe",
-            files={"file": (filename, contents)},
+            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
         )
     if not r.is_success:
         raise HTTPException(
@@ -279,7 +282,30 @@ async def transcribe(audio: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
     _validate_upload(contents)
 
-    result = await _call_evoxtral(contents, filename)
+    suffix = os.path.splitext(filename)[1].lower() or ".wav"
+    if suffix not in (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".webm"):
+        suffix = ".wav"
+
+    # Save upload, convert to WAV for external API compatibility
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(contents)
+        tmp_path = tmp.name
+    wav_path = None
+    try:
+        wav_path = _convert_to_wav_ffmpeg(tmp_path, TARGET_SR)
+        result = await _call_evoxtral(wav_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot decode audio: {e}")
+    finally:
+        for p in (tmp_path, wav_path):
+            if p and os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
     text = result.get("transcription", "")
     lang = result.get("language")
 
@@ -311,19 +337,15 @@ async def transcribe_diarize(audio: UploadFile = File(...)):
     if suffix not in (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".webm"):
         suffix = ".wav"
 
-    # ── Step 1: call external evoxtral API ──────────────────────────────────
-    t0 = time.perf_counter()
-    result = await _call_evoxtral(contents, filename)
-    full_text = result.get("transcription", "")
-    print(f"[voxtral] {req_id} evoxtral API done {(time.perf_counter()-t0)*1000:.0f}ms text_len={len(full_text)}")
-
-    # ── Step 2: load audio for VAD segmentation ──────────────────────────────
+    # Save upload and convert to WAV once — reused for both external API and VAD
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
+    wav_path = None
     try:
         t0 = time.perf_counter()
-        audio_array = _load_audio(tmp_path, TARGET_SR)
+        wav_path = _convert_to_wav_ffmpeg(tmp_path, TARGET_SR)
+        audio_array = _load_audio(wav_path, TARGET_SR)
         print(f"[voxtral] {req_id} load_audio done shape={audio_array.shape} in {(time.perf_counter()-t0)*1000:.0f}ms")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Cannot decode audio: {e}")
@@ -334,17 +356,30 @@ async def transcribe_diarize(audio: UploadFile = File(...)):
             except OSError:
                 pass
 
+    # ── Step 1: call external evoxtral API (send the converted WAV) ──────────
+    try:
+        t0 = time.perf_counter()
+        result = await _call_evoxtral(wav_path)
+        full_text = result.get("transcription", "")
+        print(f"[voxtral] {req_id} evoxtral API done {(time.perf_counter()-t0)*1000:.0f}ms text_len={len(full_text)}")
+    finally:
+        if wav_path and os.path.exists(wav_path):
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+
     duration = round(len(audio_array) / TARGET_SR, 3)
 
-    # ── Step 3: VAD sentence segmentation ───────────────────────────────────
+    # ── Step 2: VAD sentence segmentation ───────────────────────────────────
     t0 = time.perf_counter()
     raw_segs, seg_method = _segments_from_vad(audio_array, TARGET_SR)
     print(f"[voxtral] {req_id} segmentation done {(time.perf_counter()-t0)*1000:.0f}ms segs={len(raw_segs)}")
 
-    # ── Step 4: distribute text to segments ─────────────────────────────────
+    # ── Step 3: distribute text to segments ─────────────────────────────────
     segs_with_text = _distribute_text(full_text, raw_segs)
 
-    # ── Step 5: parse emotion from expression tags ──────────────────────────
+    # ── Step 4: parse emotion from expression tags ──────────────────────────
     segments = []
     for i, s in enumerate(segs_with_text):
         emo = _parse_emotion(s["text"])
