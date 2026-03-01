@@ -1,6 +1,6 @@
 # Ethos Studio — Emotional Speech Recognition
 
-Speech-to-text service with speaker diarization and per-segment emotion analysis, powered by [Voxtral Mini 4B](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602). Three-layer architecture: **Model** (Python) + **Server** (Node) + **Frontend** (Next.js).
+Speech-to-text service with VAD sentence segmentation and per-segment emotion analysis, powered by [Voxtral Mini 4B](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602). Three-layer architecture: **Model** (Python) + **Server** (Node) + **Frontend** (Next.js).
 
 ## Architecture
 
@@ -13,7 +13,7 @@ Browser (port 3030)  →  Server layer (Node, :3000)  →  Model layer (Python, 
 
 | Layer | Path | Role |
 |-------|------|------|
-| **Model** | `model/voxtral-server` | Voxtral inference, speaker diarization, emotion analysis |
+| **Model** | `model/voxtral-server` | Voxtral inference, VAD sentence segmentation, emotion analysis |
 | **Server** | `demo/server` | API entrypoint; proxies to Model |
 | **Frontend** | `demo` | Next.js UI (upload, Studio editor, waveform, timeline) |
 
@@ -21,7 +21,7 @@ See [demo/README.md](demo/README.md) for full API and usage; [model/voxtral-serv
 
 ## How to run
 
-**Requirements**: Python 3.10+, Node.js 18+, ffmpeg; GPU ≥16GB VRAM recommended.
+**Requirements**: Python 3.10+, Node.js 20+, ffmpeg; GPU ≥16GB VRAM recommended (Apple Silicon MPS supported).
 
 ### 1. Start Model layer (port 8000)
 
@@ -34,12 +34,6 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Wait for `Application startup complete`. First run may download the model (~8–16GB).
-
-Optional: set `HF_TOKEN` for real speaker diarization via pyannote:
-
-```bash
-export HF_TOKEN=hf_...
-```
 
 ### 2. Start Server layer (port 3000)
 

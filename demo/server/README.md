@@ -54,13 +54,12 @@ Simple transcription. Forwarded to Model layer `POST /transcribe`. Timeout: **5 
 
 ### POST /api/transcribe-diarize
 
-Transcription + speaker diarization + emotion analysis. Forwarded to Model layer `POST /transcribe-diarize`. Timeout: **10 min**.
+Transcription + VAD sentence segmentation + emotion analysis. Forwarded to Model layer `POST /transcribe-diarize`. Timeout: **10 min**. All segments are labelled `SPEAKER_00`.
 
 | | |
 |--|--|
 | **Content-Type** | `multipart/form-data` |
 | **Body** | `audio` — audio file (wav, mp3, flac, ogg, m4a, webm) |
-| **Query** | `num_speakers` (optional, integer 1–10) — speaker count hint; 0 = auto |
 | **Limits** | ≤ 100 MB |
 
 **Response (200)**
@@ -82,7 +81,7 @@ Transcription + speaker diarization + emotion analysis. Forwarded to Model layer
   "duration": 42.3,
   "text": "full transcript",
   "filename": "recording.m4a",
-  "diarization_method": "vad_mfcc"
+  "diarization_method": "vad"
 }
 ```
 
@@ -135,9 +134,6 @@ curl -s http://localhost:3000/health
 # Transcribe
 curl -X POST http://localhost:3000/api/speech-to-text -F "audio=@./recording.m4a"
 
-# Transcribe + diarize + emotion
+# Transcribe + segment + emotion
 curl -X POST http://localhost:3000/api/transcribe-diarize -F "audio=@./recording.m4a"
-
-# With speaker count hint
-curl -X POST "http://localhost:3000/api/transcribe-diarize?num_speakers=2" -F "audio=@./recording.m4a"
 ```
