@@ -15,6 +15,7 @@ export type Segment = {
   emotion: string
   valence: number
   arousal: number
+  face_emotion?: string  // FER result (video only): Anger | Contempt | Disgust | Fear | Happy | Neutral | Sad | Surprise
 }
 
 export type DiarizeResult = {
@@ -23,6 +24,7 @@ export type DiarizeResult = {
   text: string
   filename: string
   diarization_method?: string
+  has_video?: boolean    // true when FER was performed on video frames
 }
 
 type SessionEntry = {

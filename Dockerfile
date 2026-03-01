@@ -39,6 +39,12 @@ RUN cd demo && NEXT_PUBLIC_API_URL="" npm run build \
     && cp -r public .next/standalone/public \
     && cp -r .next/static .next/standalone/.next/static
 
+# ─── FER model (MobileViT-XXS ONNX, 8-class facial emotion) ─────────────────
+# Downloaded from the commit where it was stored as a plain binary (pre-LFS).
+RUN mkdir -p /app/models && \
+    curl -fsSL -o /app/models/emotion_model_web.onnx \
+    "https://github.com/aytoast/ser/raw/57e691f5bf1934a91d7f80976c8d7bb2899a99b8/models/emotion_model_web.onnx"
+
 # ─── Process manager + reverse proxy config ───────────────────────────────────
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY supervisord.conf /etc/supervisor/conf.d/app.conf

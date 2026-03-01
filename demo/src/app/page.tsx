@@ -91,11 +91,16 @@ function UploadDialog({
     setError(null)
     setProgress("Uploading…")
 
+    const isVideo = file.type.startsWith("video/") || /\.(mp4|mkv|avi|mov|m4v)$/i.test(file.name)
+
     try {
       const formData = new FormData()
       formData.append("audio", file, file.name)
 
-      setProgress("Transcribing and analyzing speakers…")
+      setProgress(isVideo
+        ? "Transcribing and analyzing facial emotions…"
+        : "Transcribing and analyzing speakers…"
+      )
       const res = await fetch(
         `${API_BASE}/api/transcribe-diarize`,
         { method: "POST", body: formData }
