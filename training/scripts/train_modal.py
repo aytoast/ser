@@ -361,7 +361,7 @@ def train(
     timeout=3600,
     memory=32768,
 )
-def evaluate(adapter_path: str = "/output/evoxtral-lora"):
+def evaluate(adapter_path: str = "/output/evoxtral-lora", eval_name: str = "finetuned"):
     """Run Evoxtral-Bench evaluation (base vs finetuned)."""
     import torch
     import wandb
@@ -582,7 +582,7 @@ def evaluate(adapter_path: str = "/output/evoxtral-lora"):
 
     # ── Evaluate finetuned model ──
     if Path(adapter_path).exists():
-        wandb.init(project="evoxtral", name="eval-finetuned", job_type="evaluation", tags=["eval", "finetuned"])
+        wandb.init(project="evoxtral", name=f"eval-{eval_name}", job_type="evaluation", tags=["eval", eval_name])
         print("Loading finetuned model...")
         base_model = VoxtralForConditionalGeneration.from_pretrained(
             MODEL_ID, dtype=torch.bfloat16, device_map="auto",
@@ -638,8 +638,12 @@ def main(
     batch_size: int = 2,
     push_to_hub: bool = True,
     eval_only: bool = False,
+    eval_rl: bool = False,
 ):
-    if eval_only:
+    if eval_rl:
+        results = evaluate.remote(adapter_path="/output/evoxtral-rl", eval_name="rl")
+        print(results)
+    elif eval_only:
         results = evaluate.remote()
         print(results)
     else:
