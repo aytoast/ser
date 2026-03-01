@@ -145,7 +145,7 @@ function RightPanel({
   filename: string
   isPlaying: boolean
   isVideo: boolean
-  mediaRef: React.RefObject<HTMLVideoElement>
+  mediaRef: React.RefObject<HTMLVideoElement | null>
   currentTime: number
   duration: number
   onToggle: () => void
