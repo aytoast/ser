@@ -160,6 +160,9 @@ function RightPanel({
   audioUrl,
   isVideo,
   mediaRef,
+  segments,
+  currentTime,
+  isPlaying,
   onToggle,
 }: {
   activeSegment: Segment | null
@@ -167,23 +170,25 @@ function RightPanel({
   filename: string
   isVideo: boolean
   mediaRef: React.RefObject<HTMLVideoElement | null>
+  segments: Segment[]
   isPlaying: boolean
   currentTime: number
   duration: number
   onToggle: () => void
 }) {
+  // Find the segment active at the current playback position
+  const liveSeg = segments.find(s => currentTime >= s.start && currentTime < s.end) ?? null
+
   return (
     <div className="flex flex-col h-full border-l border-border bg-background">
       {/* Video / Audio Preview */}
       <div className="aspect-video w-full bg-slate-950 flex items-center justify-center flex-shrink-0 relative group overflow-hidden">
-        {/* The media element lives here for both audio and video */}
         <video
           ref={mediaRef as React.RefObject<HTMLVideoElement>}
           src={audioUrl || undefined}
           preload="metadata"
           className={isVideo && audioUrl ? "w-full h-full object-contain" : "hidden"}
         />
-        {/* Placeholder shown for audio-only or when no file loaded */}
         {(!isVideo || !audioUrl) && (
           <NextImage src="/logo.svg" alt="Preview" width={48} height={48} className="opacity-10" />
         )}
@@ -216,7 +221,100 @@ function RightPanel({
             </div>
           </div>
 
+          {/* Live Emotion — streams with playback */}
+          {segments.length > 0 && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-[11px] font-bold text-muted-foreground uppercase tracking-widest">
+                <span className="text-[8px]">▼</span>
+                <span>Emotion</span>
+                {isPlaying && (
+                  <span className="ml-auto flex items-center gap-1 text-[10px] font-normal normal-case text-emerald-500">
+                    <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Live
+                  </span>
+                )}
+              </div>
 
+              {liveSeg ? (
+                <div className="space-y-4 pt-1">
+                  {/* Speech emotion */}
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">Speech</span>
+                    <Badge variant="secondary" className="text-[11px] h-5 px-2 font-medium rounded-full transition-all duration-300">
+                      {liveSeg.emotion}
+                    </Badge>
+                  </div>
+
+                  {/* Face emotion — video only */}
+                  {liveSeg.face_emotion && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">Face</span>
+                      <Badge variant="outline" className="text-[11px] h-5 px-2 font-medium rounded-full gap-1 transition-all duration-300">
+                        <VideoCamera size={9} weight="fill" className="text-pink-500" />
+                        {liveSeg.face_emotion}
+                      </Badge>
+                    </div>
+                  )}
+
+                  {/* Valence bar */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>Valence</span>
+                      <span className={liveSeg.valence >= 0 ? "text-emerald-500" : "text-red-400"}>
+                        {liveSeg.valence > 0 ? "+" : ""}{liveSeg.valence.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="relative h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div className="absolute top-0 left-1/2 h-full w-px bg-border/60 z-10" />
+                      <div
+                        className={cn(
+                          "absolute top-0 h-full rounded-full transition-all duration-500",
+                          liveSeg.valence >= 0 ? "bg-emerald-400" : "bg-red-400"
+                        )}
+                        style={{
+                          left: liveSeg.valence >= 0 ? "50%" : `${(0.5 + liveSeg.valence / 2) * 100}%`,
+                          width: `${Math.abs(liveSeg.valence) * 50}%`,
+                        }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[9px] text-muted-foreground/40">
+                      <span>Negative</span><span>Positive</span>
+                    </div>
+                  </div>
+
+                  {/* Arousal bar */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>Arousal</span>
+                      <span className={liveSeg.arousal >= 0 ? "text-blue-400" : "text-slate-400"}>
+                        {liveSeg.arousal > 0 ? "+" : ""}{liveSeg.arousal.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="relative h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div className="absolute top-0 left-1/2 h-full w-px bg-border/60 z-10" />
+                      <div
+                        className={cn(
+                          "absolute top-0 h-full rounded-full transition-all duration-500",
+                          liveSeg.arousal >= 0 ? "bg-blue-400" : "bg-slate-400"
+                        )}
+                        style={{
+                          left: liveSeg.arousal >= 0 ? "50%" : `${(0.5 + liveSeg.arousal / 2) * 100}%`,
+                          width: `${Math.abs(liveSeg.arousal) * 50}%`,
+                        }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[9px] text-muted-foreground/40">
+                      <span>Calm</span><span>Excited</span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-[11px] text-muted-foreground/40 text-center py-3">
+                  {currentTime === 0 ? "Play to see live emotion" : "—"}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </ScrollArea>
     </div>
@@ -560,6 +658,7 @@ function StudioContent() {
             filename={filename}
             isVideo={isVideo}
             mediaRef={mediaRef}
+            segments={segments}
             isPlaying={isPlaying}
             currentTime={currentTime}
             duration={duration}
