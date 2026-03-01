@@ -1,13 +1,12 @@
 "use client"
 
-import React, { useState } from "react"
+import React, { useState, useRef, useEffect, useMemo, Suspense } from "react"
 import Link from "next/link"
-import { motion, AnimatePresence } from "framer-motion"
+import { useSearchParams } from "next/navigation"
 import {
   ArrowLeft, ArrowCounterClockwise, ArrowClockwise,
   Export, Play, Pause, Plus, DotsThreeVertical,
-  MagnifyingGlass, MinusCircle, PlusCircle, Waveform,
-  SpeakerHigh,
+  MinusCircle, PlusCircle, Waveform,
 } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -23,65 +22,92 @@ import {
   Collapsible, CollapsibleContent, CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import { Progress } from "@/components/ui/progress"
+import { getSession, type Segment } from "@/lib/session-store"
 
-// --- Mock Data ---
-const SPEAKERS = [
-  { id: "s0", label: "Speaker 0", color: "bg-blue-400" },
-  { id: "s1", label: "Speaker 1", color: "bg-pink-400" },
+// --- Constants ---
+const SPEAKER_COLORS = [
+  { avatar: "bg-blue-400",    track: "bg-blue-200" },
+  { avatar: "bg-pink-400",    track: "bg-pink-200" },
+  { avatar: "bg-emerald-400", track: "bg-emerald-200" },
+  { avatar: "bg-amber-400",   track: "bg-amber-200" },
+  { avatar: "bg-violet-400",  track: "bg-violet-200" },
+  { avatar: "bg-cyan-400",    track: "bg-cyan-200" },
+  { avatar: "bg-rose-400",    track: "bg-rose-200" },
+  { avatar: "bg-lime-400",    track: "bg-lime-200" },
 ]
 
-const SEGMENTS = [
-  { id: 1, speaker: "s0", startTime: "00.10", endTime: "07.28", text: "[instrumental music plays]", emotion: "Neutral", valence: 0.0, arousal: 0.1 },
-  { id: 2, speaker: "s0", startTime: "08.10", endTime: "09.04", text: "Hello, I'm here.", emotion: "Calm", valence: 0.3, arousal: -0.1 },
-  { id: 3, speaker: "s1", startTime: "10.62", endTime: "11.00", text: "Oh.", emotion: "Surprise", valence: 0.4, arousal: 0.6 },
-  { id: 4, speaker: "s1", startTime: "13.02", endTime: "14.18", text: "Hi.", emotion: "Neutral", valence: 0.1, arousal: 0.0 },
-  { id: 5, speaker: "s0", startTime: "14.82", endTime: "16.40", text: "Hi.", emotion: "Happy", valence: 0.7, arousal: 0.4 },
-  { id: 6, speaker: "s1", startTime: "17.20", endTime: "22.10", text: "It's been a long time coming. Are you nervous?", emotion: "Curious", valence: 0.2, arousal: 0.5 },
-  { id: 7, speaker: "s0", startTime: "22.90", endTime: "28.50", text: "A little bit. The data is just... it's a lot to process.", emotion: "Anxiety", valence: -0.4, arousal: 0.7 },
+// --- Mock Data (demo / fallback) ---
+const MOCK_SEGMENTS: Segment[] = [
+  { id: 1, speaker: "SPEAKER_00", start: 0.10,  end: 7.28,  text: "[instrumental music plays]", emotion: "Neutral", valence: 0.0,  arousal: 0.1 },
+  { id: 2, speaker: "SPEAKER_00", start: 8.10,  end: 9.04,  text: "Hello, I'm here.", emotion: "Calm", valence: 0.3,  arousal: -0.1 },
+  { id: 3, speaker: "SPEAKER_01", start: 10.62, end: 11.00, text: "Oh.", emotion: "Surprise", valence: 0.4,  arousal: 0.6 },
+  { id: 4, speaker: "SPEAKER_01", start: 13.02, end: 14.18, text: "Hi.", emotion: "Neutral", valence: 0.1,  arousal: 0.0 },
+  { id: 5, speaker: "SPEAKER_00", start: 14.82, end: 16.40, text: "Hi.", emotion: "Happy", valence: 0.7,  arousal: 0.4 },
+  { id: 6, speaker: "SPEAKER_01", start: 17.20, end: 22.10, text: "It's been a long time coming. Are you nervous?", emotion: "Curious", valence: 0.2,  arousal: 0.5 },
+  { id: 7, speaker: "SPEAKER_00", start: 22.90, end: 28.50, text: "A little bit. The data is just... it's a lot to process.", emotion: "Anxiety", valence: -0.4, arousal: 0.7 },
 ]
+const MOCK_FILENAME = "WeChat_20250804025710.mp4"
+const MOCK_DURATION = 28.50
 
-const SPEAKER_MAP: Record<string, { label: string; color: string }> = {
-  s0: { label: "Speaker 0", color: "bg-blue-400" },
-  s1: { label: "Speaker 1", color: "bg-pink-400" },
+// --- Helpers ---
+function fmtTime(sec: number): string {
+  const m = Math.floor(sec / 60)
+  const s = (sec % 60).toFixed(2)
+  return m > 0 ? `${m}:${s.padStart(5, "0")}` : s
 }
 
-// Transcript segment row — matches the reference's Speaker / Timestamp / Text layout
+type SpeakerInfo = { label: string; avatarColor: string; trackColor: string }
+
+function buildSpeakerMap(segments: Segment[]): Record<string, SpeakerInfo> {
+  const speakers = [...new Set(segments.map(s => s.speaker))].sort()
+  return Object.fromEntries(
+    speakers.map((id, i) => {
+      const palette = SPEAKER_COLORS[i % SPEAKER_COLORS.length]
+      return [id, { label: `Speaker ${i + 1}`, avatarColor: palette.avatar, trackColor: palette.track }]
+    })
+  )
+}
+
+// --- SegmentRow ---
 function SegmentRow({
   seg,
+  speakerMap,
   active,
   onClick,
 }: {
-  seg: typeof SEGMENTS[number]
+  seg: Segment
+  speakerMap: Record<string, SpeakerInfo>
   active: boolean
   onClick: () => void
 }) {
-  const speaker = SPEAKER_MAP[seg.speaker]
+  const speaker = speakerMap[seg.speaker] ?? { label: seg.speaker, avatarColor: "bg-gray-400", trackColor: "bg-gray-200" }
   return (
     <div
       onClick={onClick}
-      className={`flex gap-0 group transition-colors cursor-pointer border-b border-border last:border-0 ${active ? "bg-accent" : "hover:bg-muted/40"}`}
+      className={`flex gap-0 group transition-colors cursor-pointer border-b border-border last:border-0 ${
+        active ? "bg-accent" : "hover:bg-muted/40"
+      }`}
     >
       {/* Speaker col */}
       <div className="w-36 flex-shrink-0 flex items-start gap-2 px-4 py-4">
         <Avatar className="w-7 h-7 flex-shrink-0 mt-0.5">
-          <AvatarFallback className={`${speaker.color} text-white text-[10px] font-bold`}>
+          <AvatarFallback className={`${speaker.avatarColor} text-white text-[10px] font-bold`}>
             {speaker.label[0]}
           </AvatarFallback>
         </Avatar>
         <span className="text-xs font-bold text-foreground leading-tight mt-1">{speaker.label}</span>
       </div>
 
-      {/* Separator */}
       <Separator orientation="vertical" className="h-auto" />
 
       {/* Time + text col */}
       <div className="flex-1 px-5 py-4 space-y-1 min-w-0">
-        <p className="text-[11px] text-muted-foreground font-medium">{seg.startTime}</p>
+        <p className="text-[11px] text-muted-foreground font-medium">{fmtTime(seg.start)}</p>
         <p className="text-sm text-foreground leading-relaxed">{seg.text}</p>
-        <p className="text-[11px] text-muted-foreground font-medium">{seg.endTime}</p>
+        <p className="text-[11px] text-muted-foreground font-medium">{fmtTime(seg.end)}</p>
       </div>
 
-      {/* Emotion badge — right */}
+      {/* Emotion badge */}
       <div className="flex-shrink-0 flex items-start pt-4 pr-4">
         <Badge
           variant="outline"
@@ -94,23 +120,55 @@ function SegmentRow({
   )
 }
 
-// Right panel: video preview + properties
-function RightPanel({ activeSegment }: { activeSegment: typeof SEGMENTS[number] | null }) {
+// --- RightPanel ---
+function RightPanel({
+  activeSegment,
+  audioUrl,
+  filename,
+  isPlaying,
+  currentTime,
+  duration,
+  onToggle,
+}: {
+  activeSegment: Segment | null
+  audioUrl: string
+  filename: string
+  isPlaying: boolean
+  currentTime: number
+  duration: number
+  onToggle: () => void
+}) {
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
+
   return (
     <div className="flex flex-col h-full border-l border-border bg-card">
-      {/* Fake video player */}
-      <div className="aspect-video w-full bg-slate-950 flex items-center justify-center flex-shrink-0 relative">
+      {/* Audio preview panel */}
+      <div className="aspect-video w-full bg-slate-950 flex items-center justify-center flex-shrink-0 relative overflow-hidden">
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/20">
           <Waveform size={36} />
-          <span className="text-[10px] font-bold uppercase tracking-widest">VIDEO PREVIEW</span>
+          <span className="text-[10px] font-bold uppercase tracking-widest truncate max-w-[80%] text-center px-2">
+            {filename}
+          </span>
         </div>
-        {/* Fake video controls bar */}
-        <div className="absolute bottom-0 left-0 right-0 h-6 bg-black/60 flex items-center px-2 gap-1">
-          <Play size={10} weight="fill" className="text-white/60" />
+        {/* Controls bar */}
+        <div className="absolute bottom-0 left-0 right-0 h-8 bg-black/70 flex items-center px-2 gap-2">
+          <button
+            onClick={onToggle}
+            disabled={!audioUrl}
+            className="text-white/80 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            {isPlaying
+              ? <Pause size={12} weight="fill" />
+              : <Play size={12} weight="fill" />
+            }
+          </button>
           <div className="flex-1 h-[2px] bg-white/20 rounded-full mx-1">
-            <div className="w-1/4 h-full bg-white/60 rounded-full" />
+            <div
+              className="h-full bg-white/60 rounded-full transition-[width]"
+              style={{ width: `${progress}%` }}
+            />
           </div>
-          <span className="text-white/40 text-[9px]">0:14.82</span>
+          <span className="text-white/40 text-[9px] font-mono">{fmtTime(currentTime)}</span>
         </div>
       </div>
 
@@ -124,12 +182,12 @@ function RightPanel({ activeSegment }: { activeSegment: typeof SEGMENTS[number] 
             <CollapsibleContent>
               <div className="mt-3 space-y-3 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-foreground truncate max-w-[160px] text-xs">WeChat_20250804025710.mp4</span>
+                  <span className="font-semibold text-foreground truncate max-w-[160px] text-xs">{filename}</span>
                 </div>
                 <Separator />
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground text-xs">Language</span>
-                  <span className="font-semibold text-xs">English</span>
+                  <span className="text-muted-foreground text-xs">Duration</span>
+                  <span className="font-semibold text-xs">{fmtTime(duration)}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground text-xs">Subtitles</span>
@@ -151,7 +209,7 @@ function RightPanel({ activeSegment }: { activeSegment: typeof SEGMENTS[number] 
 
           <Separator />
 
-          {/* Emotional Analysis (active segment) */}
+          {/* Emotional Analysis */}
           <Collapsible defaultOpen>
             <CollapsibleTrigger className="flex items-center gap-2 text-xs font-bold text-muted-foreground uppercase tracking-widest hover:text-foreground transition-colors w-full text-left">
               <span>▾</span> Emotional Analysis
@@ -191,47 +249,67 @@ function RightPanel({ activeSegment }: { activeSegment: typeof SEGMENTS[number] 
   )
 }
 
-// Bottom timeline bar
-function TimelineBar({ isPlaying, onToggle }: { isPlaying: boolean; onToggle: () => void }) {
+// --- TimelineBar ---
+function TimelineBar({
+  isPlaying,
+  onToggle,
+  segments,
+  speakerMap,
+  duration,
+  currentTime,
+}: {
+  isPlaying: boolean
+  onToggle: () => void
+  segments: Segment[]
+  speakerMap: Record<string, SpeakerInfo>
+  duration: number
+  currentTime: number
+}) {
+  const speakers = Object.keys(speakerMap)
+
   return (
     <div className="border-t border-border bg-card flex-shrink-0">
       {/* Speaker track rows */}
       <div className="border-b border-border">
-        <div className="flex items-center px-3 py-1.5 gap-2 group">
-          <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground cursor-grab">
-            <DotsThreeVertical size={12} />
-          </Button>
-          <Avatar className="w-5 h-5">
-            <AvatarFallback className="bg-blue-400 text-white text-[8px] font-bold">S</AvatarFallback>
-          </Avatar>
-          <span className="text-xs font-semibold text-foreground w-20">Speaker 0</span>
-          <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100">
-            <DotsThreeVertical size={12} />
-          </Button>
-          {/* Track visualization */}
-          <div className="flex-1 h-5 flex items-center gap-[2px]">
-            {[60, 15, 12, 8, 10, 14].map((w, i) => (
-              <div key={i} className="h-4 bg-blue-200 rounded-sm" style={{ width: `${w}%` }} />
-            ))}
-          </div>
-        </div>
-        <div className="flex items-center px-3 py-1.5 gap-2 group">
-          <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground cursor-grab">
-            <DotsThreeVertical size={12} />
-          </Button>
-          <Avatar className="w-5 h-5">
-            <AvatarFallback className="bg-pink-400 text-white text-[8px] font-bold">S</AvatarFallback>
-          </Avatar>
-          <span className="text-xs font-semibold text-foreground w-20">Speaker 1</span>
-          <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100">
-            <DotsThreeVertical size={12} />
-          </Button>
-          <div className="flex-1 h-5 flex items-center gap-[2px]">
-            {[0, 0, 5, 6, 0, 8, 5, 6].map((w, i) => (
-              w > 0 ? <div key={i} className="h-4 bg-pink-200 rounded-sm" style={{ width: `${w}%` }} /> : <div key={i} style={{ width: "8%" }} />
-            ))}
-          </div>
-        </div>
+        {speakers.map((speakerId) => {
+          const info = speakerMap[speakerId]
+          const speakerSegs = segments.filter(s => s.speaker === speakerId)
+
+          return (
+            <div key={speakerId} className="flex items-center px-3 py-1.5 gap-2 group">
+              <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground cursor-grab">
+                <DotsThreeVertical size={12} />
+              </Button>
+              <Avatar className="w-5 h-5">
+                <AvatarFallback className={`${info.avatarColor} text-white text-[8px] font-bold`}>S</AvatarFallback>
+              </Avatar>
+              <span className="text-xs font-semibold text-foreground w-20">{info.label}</span>
+              <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100">
+                <DotsThreeVertical size={12} />
+              </Button>
+              {/* Track visualization */}
+              <div className="flex-1 h-5 relative overflow-hidden rounded-sm bg-muted/30">
+                {duration > 0 && speakerSegs.map(seg => (
+                  <div
+                    key={seg.id}
+                    className={`absolute top-0.5 bottom-0.5 ${info.trackColor} rounded-sm`}
+                    style={{
+                      left: `${(seg.start / duration) * 100}%`,
+                      width: `${Math.max(((seg.end - seg.start) / duration) * 100, 0.5)}%`,
+                    }}
+                  />
+                ))}
+                {/* Playhead */}
+                {duration > 0 && (
+                  <div
+                    className="absolute top-0 bottom-0 w-px bg-foreground/60 z-10"
+                    style={{ left: `${(currentTime / duration) * 100}%` }}
+                  />
+                )}
+              </div>
+            </div>
+          )
+        })}
       </div>
 
       {/* Playback controls */}
@@ -262,7 +340,6 @@ function TimelineBar({ isPlaying, onToggle }: { isPlaying: boolean; onToggle: ()
 
         <div className="flex-1" />
 
-        {/* Add segment */}
         <Button variant="ghost" size="sm" className="text-xs text-muted-foreground font-semibold gap-1.5 h-7">
           <Plus size={13} />
           Add segment
@@ -272,15 +349,60 @@ function TimelineBar({ isPlaying, onToggle }: { isPlaying: boolean; onToggle: ()
   )
 }
 
-// --- Page ---
-export default function StudioPage() {
+// --- Studio Content ---
+function StudioContent() {
+  const searchParams = useSearchParams()
+  const sessionId = searchParams.get("s")
+
+  const audioRef = useRef<HTMLAudioElement>(null)
   const [activeId, setActiveId] = useState<number>(1)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
 
-  const activeSegment = SEGMENTS.find(s => s.id === activeId) ?? null
+  const session = sessionId ? getSession(sessionId) : null
+  const segments = session?.data.segments ?? MOCK_SEGMENTS
+  const audioUrl = session?.audioUrl ?? ""
+  const filename = session?.filename ?? MOCK_FILENAME
+  const duration = session?.data.duration ?? MOCK_DURATION
+
+  const speakerMap = useMemo(() => buildSpeakerMap(segments), [segments])
+  const activeSegment = segments.find(s => s.id === activeId) ?? segments[0] ?? null
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    const onTime = () => setCurrentTime(audio.currentTime)
+    const onPlay = () => setIsPlaying(true)
+    const onPause = () => setIsPlaying(false)
+    audio.addEventListener("timeupdate", onTime)
+    audio.addEventListener("play", onPlay)
+    audio.addEventListener("pause", onPause)
+    return () => {
+      audio.removeEventListener("timeupdate", onTime)
+      audio.removeEventListener("play", onPlay)
+      audio.removeEventListener("pause", onPause)
+    }
+  }, [])
+
+  const handleSegmentClick = (seg: Segment) => {
+    setActiveId(seg.id)
+    if (audioRef.current && audioUrl) {
+      audioRef.current.currentTime = seg.start
+    }
+  }
+
+  const togglePlay = () => {
+    const audio = audioRef.current
+    if (!audio || !audioUrl) return
+    if (isPlaying) audio.pause()
+    else audio.play()
+  }
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
+      {/* Hidden audio element */}
+      <audio ref={audioRef} src={audioUrl || undefined} preload="metadata" className="hidden" />
+
       {/* Top Bar */}
       <header className="h-11 border-b border-border bg-card flex items-center px-4 gap-3 flex-shrink-0 sticky top-0 z-50">
         <Link href="/">
@@ -289,8 +411,6 @@ export default function StudioPage() {
           </Button>
         </Link>
 
-
-        {/* Undo / Redo */}
         <div className="flex items-center gap-0.5 ml-1">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -320,30 +440,59 @@ export default function StudioPage() {
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left: Transcript scroll */}
+        {/* Left: Transcript */}
         <div className="flex-1 overflow-hidden flex flex-col min-w-0">
           <ScrollArea className="flex-1">
             <div className="max-w-2xl mx-auto py-4">
-              {SEGMENTS.map(seg => (
+              {segments.map(seg => (
                 <SegmentRow
                   key={seg.id}
                   seg={seg}
+                  speakerMap={speakerMap}
                   active={seg.id === activeId}
-                  onClick={() => setActiveId(seg.id)}
+                  onClick={() => handleSegmentClick(seg)}
                 />
               ))}
             </div>
           </ScrollArea>
         </div>
 
-        {/* Right: Properties panel ~260px */}
+        {/* Right: Properties panel */}
         <div className="w-[280px] flex-shrink-0 overflow-hidden flex flex-col">
-          <RightPanel activeSegment={activeSegment} />
+          <RightPanel
+            activeSegment={activeSegment}
+            audioUrl={audioUrl}
+            filename={filename}
+            isPlaying={isPlaying}
+            currentTime={currentTime}
+            duration={duration}
+            onToggle={togglePlay}
+          />
         </div>
       </div>
 
       {/* Bottom: Timeline */}
-      <TimelineBar isPlaying={isPlaying} onToggle={() => setIsPlaying(p => !p)} />
+      <TimelineBar
+        isPlaying={isPlaying}
+        onToggle={togglePlay}
+        segments={segments}
+        speakerMap={speakerMap}
+        duration={duration}
+        currentTime={currentTime}
+      />
     </div>
+  )
+}
+
+// --- Page (wraps in Suspense for useSearchParams) ---
+export default function StudioPage() {
+  return (
+    <Suspense fallback={
+      <div className="h-screen flex items-center justify-center text-muted-foreground text-sm">
+        Loading…
+      </div>
+    }>
+      <StudioContent />
+    </Suspense>
   )
 }
