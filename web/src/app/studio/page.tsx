@@ -325,6 +325,9 @@ function StudioContent() {
   const router = useRouter()
 
   const audioRef = useRef<HTMLAudioElement>(null)
+  // Ref-based guard: set synchronously before any await to prevent double-fetch
+  // even when React re-runs the effect before setIsProcessing(true) is committed.
+  const processingRef = useRef(false)
 
   const [session, setSession] = useState(() => sessionId ? getSession(sessionId) : null)
   const [activeId, setActiveId] = useState<number>(1)
@@ -346,10 +349,11 @@ function StudioContent() {
 
   // Automatic processing for pending sessions
   useEffect(() => {
-    if (!session || isProcessing || processError) return
+    if (!session || processingRef.current || processError) return
 
     // If we have a file but no segments, it's a pending session
     if (session.file && session.data.segments.length === 0) {
+      processingRef.current = true  // synchronous guard — prevents re-entry before state update commits
       const process = async () => {
         setIsProcessing(true)
         setProcessError(null)
@@ -377,6 +381,7 @@ function StudioContent() {
             setActiveId(updated.data.segments[0].id)
           }
         } catch (e) {
+          processingRef.current = false  // allow retry on error
           setProcessError(e instanceof Error ? e.message : "Request failed")
         } finally {
           setIsProcessing(false)
@@ -384,7 +389,7 @@ function StudioContent() {
       }
       process()
     }
-  }, [session, isProcessing, processError])
+  }, [session, processError])
 
   const segments = session?.data.segments ?? (session ? [] : MOCK_SEGMENTS)
   const audioUrl = session?.audioUrl ?? ""
