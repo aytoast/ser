@@ -99,6 +99,10 @@ def _fer_frame(img_bgr: np.ndarray) -> Optional[str]:
 
         resized = cv2.resize(face_crop, (224, 224))
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        # ImageNet normalization (matches original emotion-recognition.ts)
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        rgb  = (rgb - mean) / std
         tensor = np.transpose(rgb, (2, 0, 1))[np.newaxis]  # [1, 3, 224, 224]
 
         out = _fer_session.run(None, {_fer_input_name: tensor})[0]  # [1, 8]
