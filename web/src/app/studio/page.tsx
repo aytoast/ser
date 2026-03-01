@@ -79,30 +79,80 @@ function SegmentRow({
   seg,
   state,
   speaker,
-  onClick,
+  onRowClick,
+  onSeek,
   containerRef,
   currentTime,
 }: {
   seg: Segment
   state: "past" | "active" | "future"
   speaker: SpeakerInfo
-  onClick: () => void
+  onRowClick: () => void
+  onSeek: (time: number) => void
   containerRef?: (el: HTMLDivElement | null) => void
   currentTime: number
 }) {
   const active = state === "active"
-  // 0–1 progress through this segment for the sweeping underline
-  const progress = active
-    ? Math.max(0, Math.min(1, (currentTime - seg.start) / Math.max(seg.end - seg.start, 0.001)))
+  const segDuration = Math.max(seg.end - seg.start, 0.001)
+
+  // Strip [bracket] tags from text for character counting/highlighting
+  // They'll be rendered as inline badges instead
+  const cleanText = useMemo(() => seg.text.replace(/\[[^\]]+\]/g, "").trim(), [seg.text])
+  const bracketTags = useMemo(() => {
+    const tags: string[] = []
+    const re = /\[([^\]]+)\]/g
+    let m
+    while ((m = re.exec(seg.text)) !== null) tags.push(m[1])
+    return tags
+  }, [seg.text])
+
+  // Split text into Unicode-aware characters (handles CJK, emoji, etc.)
+  const chars = useMemo(() => Array.from(cleanText), [cleanText])
+
+  // How many chars are "lit" (already played through)
+  const litCount = state === "past"
+    ? chars.length
+    : active
+    ? Math.floor(Math.max(0, currentTime - seg.start) / segDuration * chars.length)
     : 0
+
+  // Click on text → find char index via caret position → seek to proportional time
+  function handleTextClick(e: React.MouseEvent<HTMLParagraphElement>) {
+    e.stopPropagation()
+    let charIndex = litCount
+
+    if (typeof document.caretRangeFromPoint === "function") {
+      const range = document.caretRangeFromPoint(e.clientX, e.clientY)
+      if (range) {
+        let offset = range.startOffset
+        const walker = document.createTreeWalker(e.currentTarget, NodeFilter.SHOW_TEXT)
+        let node = walker.nextNode()
+        while (node && node !== range.startContainer) {
+          offset += node.textContent?.length ?? 0
+          node = walker.nextNode()
+        }
+        charIndex = Math.max(0, Math.min(chars.length - 1, offset))
+      }
+    } else {
+      // Fallback: proportional X within paragraph
+      const rect = e.currentTarget.getBoundingClientRect()
+      charIndex = Math.floor(((e.clientX - rect.left) / rect.width) * chars.length)
+    }
+
+    const seekTime = seg.start + (charIndex / chars.length) * segDuration
+    onSeek(Math.max(seg.start, Math.min(seg.end, seekTime)))
+  }
+
+  const litText = chars.slice(0, litCount).join("")
+  const dimText = chars.slice(litCount).join("")
 
   return (
     <div
       ref={containerRef}
-      onClick={onClick}
+      onClick={onRowClick}
       className={cn(
-        "relative flex items-start gap-12 group transition-colors duration-200 cursor-pointer py-4 rounded-lg px-4 border",
-        active ? "border-transparent" : "border-transparent hover:bg-muted/20"
+        "relative flex items-start gap-12 group transition-colors duration-200 cursor-pointer py-4 rounded-lg px-4 border border-transparent",
+        !active && "hover:bg-muted/20"
       )}
     >
       {/* Active left accent bar */}
@@ -130,38 +180,25 @@ function SegmentRow({
       )}>
         <span className="text-[10px] font-sans font-medium text-muted-foreground/40 block tracking-tight">{fmtTime(seg.start)}</span>
 
-        {/* Text with sweeping underline progress */}
-        <div className="relative pb-1">
-          <p className={cn(
-            "text-[15px] leading-[1.6] font-medium tracking-tight whitespace-pre-wrap transition-colors duration-300",
-            active ? "text-foreground"
-              : state === "past" ? "text-muted-foreground/40"
-              : "text-foreground/55"
-          )}>
-            {seg.text}
-          </p>
-          {/* Sweep underline — moves left→right as segment plays */}
-          {active && (
-            <div
-              className="absolute bottom-0 left-0 h-[2px] bg-primary/50 rounded-full"
-              style={{ width: `${progress * 100}%`, transition: "width 80ms linear" }}
-            />
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 flex-wrap pt-0.5">
-          {seg.emotion && (
-            <Badge variant="secondary" className={cn("text-[10px] h-5 px-2 font-medium rounded-full transition-opacity duration-300", state === "past" && "opacity-40")}>
-              {seg.emotion}
-            </Badge>
-          )}
-          {seg.face_emotion && (
-            <Badge variant="outline" className={cn("text-[10px] h-5 px-2 font-medium rounded-full gap-1 transition-opacity duration-300", state === "past" && "opacity-40")}>
-              <VideoCamera size={9} weight="fill" className="text-pink-500" />
-              {seg.face_emotion}
-            </Badge>
-          )}
-        </div>
+        {/* Two-span text: lit (dark) + dim (gray) — click anywhere to seek */}
+        <p
+          className="text-[15px] leading-[1.6] font-medium tracking-tight whitespace-pre-wrap cursor-text select-none"
+          onClick={handleTextClick}
+        >
+          <span className="text-foreground">{litText}</span>
+          <span className="text-muted-foreground/30">{dimText}</span>
+          {/* [bracket] expression tags rendered inline */}
+          {bracketTags.map((tag, i) => (
+            <span key={i} className="inline-flex items-center ml-1.5 align-middle">
+              <Badge
+                variant="secondary"
+                className={cn("text-[10px] h-5 px-2 font-medium rounded-full transition-opacity duration-300 pointer-events-none", state === "past" && "opacity-40")}
+              >
+                {tag}
+              </Badge>
+            </span>
+          ))}
+        </p>
         <span className="text-[10px] font-sans font-medium text-muted-foreground/40 block tracking-tight">{fmtTime(seg.end)}</span>
       </div>
     </div>
@@ -743,7 +780,8 @@ function StudioContent() {
                       seg={seg}
                       state={state}
                       speaker={speakerMap[seg.speaker]}
-                      onClick={() => handleSegmentClick(seg)}
+                      onRowClick={() => handleSegmentClick(seg)}
+                      onSeek={handleSeek}
                       currentTime={currentTime}
                       containerRef={el => {
                         if (el) segmentRefs.current.set(seg.id, el)
