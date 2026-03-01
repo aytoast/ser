@@ -259,44 +259,57 @@ def _segments_from_vad(audio: np.ndarray, sr: int) -> tuple[list[dict], str]:
     return segs, "vad"
 
 
-def _tokenize_text(text: str) -> list[str]:
-    """Split text into tokens. For CJK text (no spaces), split by character.
-    For space-separated languages, split by whitespace."""
-    tokens = text.split()
-    # If no spaces found (e.g. Chinese/Japanese), split by character instead
-    if len(tokens) <= 1 and len(text) > 1:
-        return list(text)
-    return tokens
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences at punctuation boundaries (CJK + Latin)."""
+    import re
+    parts = re.split(r'(?<=[？！。?!])\s*', text)
+    return [p for p in parts if p.strip()]
 
 
 def _distribute_text(full_text: str, segs: list[dict]) -> list[dict]:
-    """Proportionally distribute transcription tokens across segments by duration."""
-    tokens = _tokenize_text(full_text)
-    total_tokens = len(tokens)
-    if not tokens or not segs:
+    """Assign complete sentences to segments by time proportion.
+    Sentences are never split mid-punctuation; each segment gets whole sentences.
+    Falls back to character-level splitting if no sentence boundaries found.
+    """
+    if not full_text or not segs:
         return [{**s, "text": ""} for s in segs]
+
+    if len(segs) == 1:
+        return [{**segs[0], "text": full_text}]
+
+    sentences = _split_sentences(full_text)
+    # Fallback: split by character if no sentence boundaries
+    if len(sentences) <= 1:
+        is_cjk = len(full_text.split()) <= 1
+        sentences = list(full_text) if is_cjk else full_text.split()
 
     total_dur = sum(s["end"] - s["start"] for s in segs)
     if total_dur <= 0:
-        result = [{**segs[0], "text": full_text}]
-        return result + [{**s, "text": ""} for s in segs[1:]]
+        return [{**segs[0], "text": full_text}] + [{**s, "text": ""} for s in segs[1:]]
 
     is_cjk = len(full_text.split()) <= 1 and len(full_text) > 1
     sep = "" if is_cjk else " "
 
-    result: list[dict] = []
-    token_idx = 0
+    # Assign each sentence to the segment whose cumulative time covers its proportional position
+    n = len(sentences)
+    result_texts: list[list[str]] = [[] for _ in segs]
+
+    cumulative = 0.0
     for i, seg in enumerate(segs):
-        dur = seg["end"] - seg["start"]
-        frac = dur / total_dur
-        n = round(frac * total_tokens)
-        if i == len(segs) - 1:
-            chunk = tokens[token_idx:]
-        else:
-            chunk = tokens[token_idx: token_idx + max(1, n)]
-        result.append({**seg, "text": sep.join(chunk)})
-        token_idx += len(chunk)
-    return result
+        cumulative += (seg["end"] - seg["start"]) / total_dur
+        # Assign sentences whose proportional position falls within this segment's cumulative range
+        threshold = cumulative * n
+        while len(result_texts[i]) + sum(len(t) for t in result_texts[:i]) < round(threshold):
+            idx = sum(len(t) for t in result_texts)
+            if idx >= n:
+                break
+            result_texts[i].append(sentences[idx])
+
+    # Ensure any leftover sentences go to the last segment
+    assigned = sum(len(t) for t in result_texts)
+    result_texts[-1].extend(sentences[assigned:])
+
+    return [{**seg, "text": sep.join(texts)} for seg, texts in zip(segs, result_texts)]
 
 
 # ─── Emotion analysis ──────────────────────────────────────────────────────────
