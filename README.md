@@ -1,3 +1,13 @@
+---
+title: Ethos Studio
+emoji: 🎤
+colorFrom: purple
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Ethos Studio — Emotional Speech Recognition
 
 Speech-to-text service with VAD sentence segmentation and per-segment emotion analysis, powered by [Voxtral Mini 4B](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602). Three-layer architecture: **Model** (Python) + **Server** (Node) + **Frontend** (Next.js).

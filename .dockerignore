@@ -1,0 +1,24 @@
+# Build artifacts
+demo/.next/
+demo/out/
+
+# Dependencies (installed inside Docker)
+demo/node_modules/
+demo/server/node_modules/
+model/voxtral-server/.venv/
+
+# Local env overrides
+demo/.env.local
+demo/.env*.local
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+
+# Git
+.git/
+
+# Logs
+*.log
