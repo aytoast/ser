@@ -37,12 +37,13 @@ def _init_model() -> None:
     from transformers import VoxtralForConditionalGeneration, AutoProcessor
     from peft import PeftModel
 
+    # bfloat16 on both GPU and CPU — halves memory vs float32 (~6 GB vs ~12 GB)
+    # PyTorch CPU supports bfloat16 natively since 1.12
+    _model_dtype = torch.bfloat16
     if torch.cuda.is_available():
-        _model_dtype  = torch.bfloat16
-        device_map    = "auto"
+        device_map = "auto"
     else:
-        _model_dtype  = torch.float32
-        device_map    = "cpu"
+        device_map = "cpu"
 
     print(f"[voxtral] Loading processor {MODEL_ID} ...")
     _processor = AutoProcessor.from_pretrained(MODEL_ID)
