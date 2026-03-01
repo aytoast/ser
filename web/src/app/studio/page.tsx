@@ -77,32 +77,44 @@ function buildSpeakerMap(segments: Segment[]): Record<string, SpeakerInfo> {
 // --- SegmentRow ---
 function SegmentRow({
   seg,
-  active,
+  state,
   speaker,
   onClick,
   containerRef,
+  currentTime,
 }: {
   seg: Segment
-  active: boolean
+  state: "past" | "active" | "future"
   speaker: SpeakerInfo
   onClick: () => void
   containerRef?: (el: HTMLDivElement | null) => void
+  currentTime: number
 }) {
+  const active = state === "active"
+  // 0–1 progress through this segment for the sweeping underline
+  const progress = active
+    ? Math.max(0, Math.min(1, (currentTime - seg.start) / Math.max(seg.end - seg.start, 0.001)))
+    : 0
+
   return (
     <div
       ref={containerRef}
       onClick={onClick}
       className={cn(
-        "relative flex items-start gap-12 group transition-all duration-300 cursor-pointer py-4 rounded-lg px-4 border",
-        active ? "bg-primary/[0.03] border-primary/15" : "border-transparent hover:bg-muted/30"
+        "relative flex items-start gap-12 group transition-colors duration-200 cursor-pointer py-4 rounded-lg px-4 border",
+        active ? "border-transparent" : "border-transparent hover:bg-muted/20"
       )}
     >
       {/* Active left accent bar */}
       {active && (
-        <div className="absolute left-0 top-3 bottom-3 w-[3px] bg-primary/50 rounded-full transition-all duration-300" />
+        <div className="absolute left-0 top-3 bottom-3 w-[3px] bg-primary/60 rounded-full" />
       )}
+
       {/* Speaker */}
-      <div className="w-32 flex items-center gap-3 shrink-0 pt-1">
+      <div className={cn(
+        "w-32 flex items-center gap-3 shrink-0 pt-1 transition-opacity duration-300",
+        state === "past" ? "opacity-30" : state === "future" ? "opacity-50" : "opacity-100"
+      )}>
         <Avatar className="size-6 ring-2 ring-background border border-border/20">
           <AvatarFallback className={cn("text-[10px] text-white", speaker.avatarColor)}>
             {speaker.label[0]}
@@ -112,17 +124,39 @@ function SegmentRow({
       </div>
 
       {/* Content */}
-      <div className="flex-1 space-y-1.5 min-w-0 border-l-[1.5px] border-border/30 pl-8 relative">
+      <div className={cn(
+        "flex-1 space-y-1.5 min-w-0 pl-8 relative border-l-[1.5px] transition-colors duration-300",
+        active ? "border-primary/40" : state === "past" ? "border-border/15" : "border-border/25"
+      )}>
         <span className="text-[10px] font-sans font-medium text-muted-foreground/40 block tracking-tight">{fmtTime(seg.start)}</span>
-        <p className="text-[15px] text-foreground leading-[1.6] font-medium tracking-tight whitespace-pre-wrap">{seg.text}</p>
+
+        {/* Text with sweeping underline progress */}
+        <div className="relative pb-1">
+          <p className={cn(
+            "text-[15px] leading-[1.6] font-medium tracking-tight whitespace-pre-wrap transition-colors duration-300",
+            active ? "text-foreground"
+              : state === "past" ? "text-muted-foreground/40"
+              : "text-foreground/55"
+          )}>
+            {seg.text}
+          </p>
+          {/* Sweep underline — moves left→right as segment plays */}
+          {active && (
+            <div
+              className="absolute bottom-0 left-0 h-[2px] bg-primary/50 rounded-full"
+              style={{ width: `${progress * 100}%`, transition: "width 80ms linear" }}
+            />
+          )}
+        </div>
+
         <div className="flex items-center gap-2 flex-wrap pt-0.5">
           {seg.emotion && (
-            <Badge variant="secondary" className="text-[10px] h-5 px-2 font-medium rounded-full">
+            <Badge variant="secondary" className={cn("text-[10px] h-5 px-2 font-medium rounded-full transition-opacity duration-300", state === "past" && "opacity-40")}>
               {seg.emotion}
             </Badge>
           )}
           {seg.face_emotion && (
-            <Badge variant="outline" className="text-[10px] h-5 px-2 font-medium rounded-full gap-1">
+            <Badge variant="outline" className={cn("text-[10px] h-5 px-2 font-medium rounded-full gap-1 transition-opacity duration-300", state === "past" && "opacity-40")}>
               <VideoCamera size={9} weight="fill" className="text-pink-500" />
               {seg.face_emotion}
             </Badge>
@@ -421,12 +455,23 @@ function TimelineBar({
               </div>
             ))}
 
-            {/* Playhead */}
+            {/* Played region overlay */}
+            {duration > 0 && currentTime > 0 && (
+              <div
+                className="absolute inset-y-0 left-0 bg-foreground/[0.04] pointer-events-none"
+                style={{ width: (currentTime / duration) * 100 + "%" }}
+              />
+            )}
+
+            {/* Playhead — thin line + dot at top */}
             {duration > 0 && (
               <div
-                className="absolute top-0 bottom-0 w-px bg-black z-20 pointer-events-none transition-all duration-75"
-                style={{ left: (currentTime / duration) * 100 + "%" }}
-              />
+                className="absolute top-0 bottom-0 z-20 pointer-events-none"
+                style={{ left: `calc(${(currentTime / duration) * 100}% - 1px)` }}
+              >
+                <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 size-2.5 rounded-full bg-foreground border-2 border-background" />
+                <div className="absolute top-1 bottom-0 left-1/2 -translate-x-1/2 w-[1.5px] bg-foreground/80" />
+              </div>
             )}
           </div>
         </div>
@@ -687,21 +732,27 @@ function StudioContent() {
                   No segments found.
                 </div>
               )}
-              {segments.map((seg, i) => (
-                <React.Fragment key={seg.id}>
-                  {i > 0 && segments[i - 1].speaker === seg.speaker && <MergeButton />}
-                  <SegmentRow
-                    seg={seg}
-                    active={seg.id === activeId}
-                    speaker={speakerMap[seg.speaker]}
-                    onClick={() => handleSegmentClick(seg)}
-                    containerRef={el => {
-                      if (el) segmentRefs.current.set(seg.id, el)
-                      else segmentRefs.current.delete(seg.id)
-                    }}
-                  />
-                </React.Fragment>
-              ))}
+              {segments.map((seg, i) => {
+                const state = seg.id === activeId ? "active"
+                  : seg.end <= currentTime ? "past"
+                  : "future"
+                return (
+                  <React.Fragment key={seg.id}>
+                    {i > 0 && segments[i - 1].speaker === seg.speaker && <MergeButton />}
+                    <SegmentRow
+                      seg={seg}
+                      state={state}
+                      speaker={speakerMap[seg.speaker]}
+                      onClick={() => handleSegmentClick(seg)}
+                      currentTime={currentTime}
+                      containerRef={el => {
+                        if (el) segmentRefs.current.set(seg.id, el)
+                        else segmentRefs.current.delete(seg.id)
+                      }}
+                    />
+                  </React.Fragment>
+                )
+              })}
             </div>
           </ScrollArea>
         </div>
