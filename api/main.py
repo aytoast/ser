@@ -257,6 +257,27 @@ app.add_middleware(
 )
 
 
+@app.get("/debug-inference")
+async def debug_inference():
+    """Quick smoke-test: synthesize 0.5s of silence and run a minimal generate() call."""
+    import traceback, torch
+    if _model is None:
+        return {"ok": False, "error": "model not loaded"}
+    try:
+        import numpy as np
+        silence = np.zeros(8000, dtype=np.float32)  # 0.5 s @ 16 kHz
+        import tempfile, soundfile as sf, asyncio
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav_path = f.name
+        sf.write(wav_path, silence, 16000)
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, _transcribe_sync, wav_path)
+        import os; os.unlink(wav_path)
+        return {"ok": True, "text": text, "dtype": str(_model_dtype), "device": str(_model_device)}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+
+
 @app.get("/health")
 async def health():
     return {
