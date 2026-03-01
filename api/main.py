@@ -1,7 +1,7 @@
 """
-Evoxtral speech-to-text API proxy (Model layer).
-Forwards audio to the external Modal evoxtral API, adds VAD segmentation
-and emotion parsing. For video files, also runs FER (MobileViT-XXS ONNX).
+Evoxtral speech-to-text server (Model layer).
+Runs Voxtral-Mini-3B + evoxtral-lora locally for transcription with expressive
+tags. For video files, also runs FER (MobileViT-XXS ONNX) per segment.
 """
 import asyncio
 import os
@@ -13,26 +13,94 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import httpx
 import librosa
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-EVOXTRAL_API = os.environ.get(
-    "EVOXTRAL_API",
-    "https://yongkang-zou1999--evoxtral-api-evoxtralmodel-web.modal.run",
-).rstrip("/")
+MODEL_ID   = os.environ.get("MODEL_ID",   "mistralai/Voxtral-Mini-3B-2507")
+ADAPTER_ID = os.environ.get("ADAPTER_ID", "YongkangZOU/evoxtral-lora")
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "100")) * 1024 * 1024
 TARGET_SR = 16000
 
+# ─── STT model ────────────────────────────────────────────────────────────────
+
+_model     = None
+_processor = None
+_model_dtype  = None
+_model_device = None
+
+
+def _init_model() -> None:
+    global _model, _processor, _model_dtype, _model_device
+    import torch
+    from transformers import VoxtralForConditionalGeneration, AutoProcessor
+    from peft import PeftModel
+
+    if torch.cuda.is_available():
+        _model_dtype  = torch.bfloat16
+        device_map    = "auto"
+    else:
+        _model_dtype  = torch.float32
+        device_map    = "cpu"
+
+    print(f"[voxtral] Loading processor {MODEL_ID} ...")
+    _processor = AutoProcessor.from_pretrained(MODEL_ID)
+
+    print(f"[voxtral] Loading base model {MODEL_ID} (dtype={_model_dtype}) ...")
+    base_model = VoxtralForConditionalGeneration.from_pretrained(
+        MODEL_ID,
+        torch_dtype=_model_dtype,
+        device_map=device_map,
+    )
+
+    print(f"[voxtral] Applying LoRA adapter {ADAPTER_ID} ...")
+    _model = PeftModel.from_pretrained(base_model, ADAPTER_ID)
+    _model.eval()
+
+    _model_device = next(_model.parameters()).device
+    print(f"[voxtral] Model ready on {_model_device} (dtype={_model_dtype})")
+
+
+def _transcribe_sync(wav_path: str) -> str:
+    """Run local Voxtral inference (blocking — call via run_in_executor)."""
+    import torch
+
+    audio_array, _ = librosa.load(wav_path, sr=TARGET_SR, mono=True)
+
+    inputs = _processor.apply_transcription_request(
+        audio=[audio_array],
+        format=["WAV"],
+        model_id=MODEL_ID,
+        return_tensors="pt",
+    )
+
+    # Move inputs to model device / dtype
+    inputs = {
+        k: (v.to(_model_device, dtype=_model_dtype)
+            if v.dtype in (torch.float32, torch.float16, torch.bfloat16)
+            else v.to(_model_device))
+        if hasattr(v, "to") else v
+        for k, v in inputs.items()
+    }
+
+    with torch.no_grad():
+        output_ids = _model.generate(**inputs, max_new_tokens=512, do_sample=False)
+
+    input_len = inputs["input_ids"].shape[1]
+    text = _processor.tokenizer.decode(
+        output_ids[0][input_len:], skip_special_tokens=True
+    ).strip()
+    return text
+
+
 # ─── FER setup ────────────────────────────────────────────────────────────────
 
-_fer_session = None
+_fer_session   = None
 _fer_input_name = "input"
-_face_cascade = None
-_FER_CLASSES = ["Anger", "Contempt", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise"]
-_VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".m4v"}
+_face_cascade  = None
+_FER_CLASSES   = ["Anger", "Contempt", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise"]
+_VIDEO_EXTS    = {".mp4", ".mkv", ".avi", ".mov", ".m4v"}
 
 
 def _init_fer() -> None:
@@ -50,7 +118,7 @@ def _init_fer() -> None:
 
     try:
         import onnxruntime as rt
-        _fer_session = rt.InferenceSession(fer_path, providers=["CPUExecutionProvider"])
+        _fer_session    = rt.InferenceSession(fer_path, providers=["CPUExecutionProvider"])
         _fer_input_name = _fer_session.get_inputs()[0].name
         print(f"[voxtral] FER model loaded: {fer_path} (input={_fer_input_name})")
     except Exception as e:
@@ -59,7 +127,7 @@ def _init_fer() -> None:
 
     try:
         import cv2
-        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        cascade_path  = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         _face_cascade = cv2.CascadeClassifier(cascade_path)
         print("[voxtral] Face cascade loaded")
     except Exception as e:
@@ -78,30 +146,32 @@ def _fer_frame(img_bgr: np.ndarray) -> Optional[str]:
         import cv2
         face_crop = None
 
-        # Try face detection
         if _face_cascade is not None:
-            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            gray  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
             faces = _face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(40, 40))
             if len(faces) > 0:
-                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])  # largest face
+                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
                 pad = int(min(w, h) * 0.15)
                 x1, y1 = max(0, x - pad), max(0, y - pad)
                 x2, y2 = min(img_bgr.shape[1], x + w + pad), min(img_bgr.shape[0], y + h + pad)
                 face_crop = img_bgr[y1:y2, x1:x2]
 
         if face_crop is None:
-            # Center crop fallback (upper 60% of frame = typical head/shoulder area)
-            h, w = img_bgr.shape[:2]
-            crop_h = int(h * 0.6)
-            cx = w // 2
-            half = min(crop_h, w) // 2
+            h, w    = img_bgr.shape[:2]
+            crop_h  = int(h * 0.6)
+            cx      = w // 2
+            half    = min(crop_h, w) // 2
             face_crop = img_bgr[:crop_h, max(0, cx - half):cx + half]
 
         resized = cv2.resize(face_crop, (224, 224))
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        rgb     = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        # ImageNet normalization (matches original emotion-recognition.ts)
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        rgb  = (rgb - mean) / std
         tensor = np.transpose(rgb, (2, 0, 1))[np.newaxis]  # [1, 3, 224, 224]
 
-        out = _fer_session.run(None, {_fer_input_name: tensor})[0]  # [1, 8]
+        out = _fer_session.run(None, {_fer_input_name: tensor})[0]
         return _FER_CLASSES[int(np.argmax(out[0]))]
     except Exception as e:
         print(f"[voxtral] FER frame error: {e}")
@@ -118,12 +188,10 @@ def _fer_for_segments(video_path: str, segments: list[dict]) -> dict[int, str]:
         import cv2
         from collections import Counter
 
-        rc = subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", video_path,
-                "-vf", "fps=1", "-vframes", "600",
-                "-q:v", "5", os.path.join(frames_dir, "%06d.jpg"),
-            ],
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", video_path,
+             "-vf", "fps=1", "-vframes", "600",
+             "-q:v", "5", os.path.join(frames_dir, "%06d.jpg")],
             capture_output=True, timeout=120,
         )
         frame_files = sorted(f for f in os.listdir(frames_dir) if f.endswith(".jpg"))
@@ -131,7 +199,6 @@ def _fer_for_segments(video_path: str, segments: list[dict]) -> dict[int, str]:
             print("[voxtral] FER: no video frames extracted (audio-only?)")
             return {}
 
-        # second → emotion (000001.jpg = second 0)
         frame_emotions: dict[int, str] = {}
         for fname in frame_files:
             second = int(os.path.splitext(fname)[0]) - 1
@@ -142,17 +209,16 @@ def _fer_for_segments(video_path: str, segments: list[dict]) -> dict[int, str]:
             if emo:
                 frame_emotions[second] = emo
 
-        # Aggregate: most common emotion per VAD segment
         result: dict[int, str] = {}
         for seg in segments:
-            start_s, end_s = int(seg["start"]), max(int(seg["end"]), int(seg["start"]) + 1)
-            emos = [frame_emotions[s] for s in range(start_s, end_s) if s in frame_emotions]
+            start_s = int(seg["start"])
+            end_s   = max(int(seg["end"]), start_s + 1)
+            emos    = [frame_emotions[s] for s in range(start_s, end_s) if s in frame_emotions]
             if emos:
                 result[seg["id"]] = Counter(emos).most_common(1)[0][0]
 
         print(f"[voxtral] FER: {len(frame_files)} frames → {len(result)} segments with face emotion")
         return result
-
     except Exception as e:
         print(f"[voxtral] FER extraction error: {e}")
         return {}
@@ -175,18 +241,12 @@ def _check_ffmpeg():
 async def lifespan(app: FastAPI):
     _check_ffmpeg()
     print(f"[voxtral] ffmpeg: {shutil.which('ffmpeg')}")
-    print(f"[voxtral] Evoxtral API: {EVOXTRAL_API}")
     _init_fer()
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(f"{EVOXTRAL_API}/health")
-            print(f"[voxtral] External API health: {r.status_code} {r.text[:200]}")
-    except Exception as e:
-        print(f"[voxtral] External API health check failed: {e}")
+    _init_model()
     yield
 
 
-app = FastAPI(title="Evoxtral Speech-to-Text (Model)", lifespan=lifespan)
+app = FastAPI(title="Evoxtral Speech-to-Text (local)", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -200,33 +260,13 @@ app.add_middleware(
 async def health():
     return {
         "status": "ok",
-        "model": "YongkangZOU/evoxtral-lora (external API)",
-        "model_loaded": True,
+        "model": f"{MODEL_ID} + {ADAPTER_ID} (local)",
+        "model_loaded": _model is not None,
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "fer_enabled": _fer_session is not None,
-        "pyannote_available": False,
-        "hf_token_set": False,
+        "device": str(_model_device) if _model_device else None,
         "max_upload_mb": MAX_UPLOAD_BYTES // 1024 // 1024,
-        "evoxtral_api": EVOXTRAL_API,
     }
-
-
-# ─── External STT API ─────────────────────────────────────────────────────────
-
-async def _call_evoxtral(wav_path: str) -> dict:
-    with open(wav_path, "rb") as f:
-        wav_bytes = f.read()
-    async with httpx.AsyncClient(timeout=300) as client:
-        r = await client.post(
-            f"{EVOXTRAL_API}/transcribe",
-            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-        )
-    if not r.is_success:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Evoxtral API error {r.status_code}: {r.text[:300]}",
-        )
-    return r.json()
 
 
 # ─── Audio helpers ─────────────────────────────────────────────────────────────
@@ -325,34 +365,34 @@ def _distribute_text(full_text: str, segs: list[dict]) -> list[dict]:
 # ─── Emotion parsing from evoxtral expression tags ─────────────────────────────
 
 _TAG_EMOTIONS: dict[str, tuple[str, float, float]] = {
-    "laughs":           ("Happy",      0.70,  0.60),
-    "laughing":         ("Happy",      0.70,  0.60),
-    "chuckles":         ("Happy",      0.50,  0.30),
-    "giggles":          ("Happy",      0.60,  0.40),
-    "sighs":            ("Sad",       -0.30, -0.30),
-    "sighing":          ("Sad",       -0.30, -0.30),
-    "cries":            ("Sad",       -0.70,  0.40),
-    "crying":           ("Sad",       -0.70,  0.40),
-    "whispers":         ("Calm",       0.10, -0.50),
-    "whispering":       ("Calm",       0.10, -0.50),
-    "shouts":           ("Angry",     -0.50,  0.80),
-    "shouting":         ("Angry",     -0.50,  0.80),
-    "exclaims":         ("Excited",    0.50,  0.70),
-    "gasps":            ("Surprised",  0.20,  0.70),
-    "hesitates":        ("Anxious",   -0.20,  0.30),
-    "stutters":         ("Anxious",   -0.20,  0.40),
-    "stammers":         ("Anxious",   -0.25,  0.35),
-    "mumbles":          ("Sad",       -0.20, -0.30),
-    "nervous":          ("Anxious",   -0.30,  0.40),
-    "frustrated":       ("Frustrated",-0.50,  0.50),
-    "excited":          ("Excited",    0.50,  0.70),
-    "sad":              ("Sad",       -0.60, -0.20),
-    "angry":            ("Angry",     -0.60,  0.70),
-    "claps":            ("Happy",      0.60,  0.50),
-    "applause":         ("Happy",      0.60,  0.50),
-    "clears throat":    ("Neutral",    0.00,  0.10),
-    "pause":            ("Neutral",    0.00, -0.10),
-    "laughs nervously": ("Anxious",   -0.10,  0.40),
+    "laughs":           ("Happy",       0.70,  0.60),
+    "laughing":         ("Happy",       0.70,  0.60),
+    "chuckles":         ("Happy",       0.50,  0.30),
+    "giggles":          ("Happy",       0.60,  0.40),
+    "sighs":            ("Sad",        -0.30, -0.30),
+    "sighing":          ("Sad",        -0.30, -0.30),
+    "cries":            ("Sad",        -0.70,  0.40),
+    "crying":           ("Sad",        -0.70,  0.40),
+    "whispers":         ("Calm",        0.10, -0.50),
+    "whispering":       ("Calm",        0.10, -0.50),
+    "shouts":           ("Angry",      -0.50,  0.80),
+    "shouting":         ("Angry",      -0.50,  0.80),
+    "exclaims":         ("Excited",     0.50,  0.70),
+    "gasps":            ("Surprised",   0.20,  0.70),
+    "hesitates":        ("Anxious",    -0.20,  0.30),
+    "stutters":         ("Anxious",    -0.20,  0.40),
+    "stammers":         ("Anxious",    -0.25,  0.35),
+    "mumbles":          ("Sad",        -0.20, -0.30),
+    "nervous":          ("Anxious",    -0.30,  0.40),
+    "frustrated":       ("Frustrated", -0.50,  0.50),
+    "excited":          ("Excited",     0.50,  0.70),
+    "sad":              ("Sad",        -0.60, -0.20),
+    "angry":            ("Angry",      -0.60,  0.70),
+    "claps":            ("Happy",       0.60,  0.50),
+    "applause":         ("Happy",       0.60,  0.50),
+    "clears throat":    ("Neutral",     0.00,  0.10),
+    "pause":            ("Neutral",     0.00, -0.10),
+    "laughs nervously": ("Anxious",    -0.10,  0.40),
 }
 
 
@@ -374,13 +414,13 @@ def _parse_emotion(text: str) -> dict:
 @app.post("/transcribe")
 async def transcribe(audio: UploadFile = File(...)):
     req_start = time.perf_counter()
-    filename = audio.filename or "audio.wav"
+    filename  = audio.filename or "audio.wav"
     print(f"[voxtral] POST /transcribe filename={filename}")
 
-    try:
-        contents = await audio.read()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
+    if _model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    contents = await audio.read()
     _validate_upload(contents)
 
     suffix = os.path.splitext(filename)[1].lower() or ".wav"
@@ -391,7 +431,8 @@ async def transcribe(audio: UploadFile = File(...)):
     wav_path = None
     try:
         wav_path = _convert_to_wav_ffmpeg(tmp_path, TARGET_SR)
-        result = await _call_evoxtral(wav_path)
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, _transcribe_sync, wav_path)
     except HTTPException:
         raise
     except Exception as e:
@@ -399,32 +440,28 @@ async def transcribe(audio: UploadFile = File(...)):
     finally:
         for p in (tmp_path, wav_path):
             if p and os.path.exists(p):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+                try: os.unlink(p)
+                except OSError: pass
 
-    text = result.get("transcription", "")
     print(f"[voxtral] /transcribe done {(time.perf_counter()-req_start)*1000:.0f}ms")
-    return {"text": text, "words": [], "languageCode": result.get("language")}
+    return {"text": text, "words": []}
 
 
 @app.post("/transcribe-diarize")
 async def transcribe_diarize(audio: UploadFile = File(...)):
     """
     Upload audio/video → transcription + VAD segmentation + emotion.
-    For video files (.mp4, .mkv, .avi, .mov, .m4v), also runs FER
-    (MobileViT-XXS ONNX) to add face_emotion per segment.
+    For video files (.mp4, .mkv, .avi, .mov, .m4v), also runs FER.
     """
     req_start = time.perf_counter()
-    req_id = f"diarize-{int(req_start * 1000)}"
-    filename = audio.filename or "audio.wav"
+    req_id    = f"diarize-{int(req_start * 1000)}"
+    filename  = audio.filename or "audio.wav"
     print(f"[voxtral] {req_id} POST /transcribe-diarize filename={filename}")
 
-    try:
-        contents = await audio.read()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
+    if _model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    contents = await audio.read()
     _validate_upload(contents)
 
     suffix = os.path.splitext(filename)[1].lower() or ".wav"
@@ -432,67 +469,57 @@ async def transcribe_diarize(audio: UploadFile = File(...)):
                       ".mp4", ".mkv", ".avi", ".mov", ".m4v"):
         suffix = ".wav"
 
-    # Save upload to disk (needed for both WAV conversion and FER frame extraction)
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
 
     wav_path = None
     try:
-        # ── Convert to WAV for STT + VAD ────────────────────────────────────
         t0 = time.perf_counter()
-        wav_path = _convert_to_wav_ffmpeg(tmp_path, TARGET_SR)
-        audio_array = _load_audio(wav_path, TARGET_SR)
+        wav_path     = _convert_to_wav_ffmpeg(tmp_path, TARGET_SR)
+        audio_array  = _load_audio(wav_path, TARGET_SR)
         print(f"[voxtral] {req_id} audio loaded shape={audio_array.shape} in {(time.perf_counter()-t0)*1000:.0f}ms")
     except Exception as e:
         for p in (tmp_path, wav_path):
             if p and os.path.exists(p):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+                try: os.unlink(p)
+                except OSError: pass
         raise HTTPException(status_code=400, detail=f"Cannot decode audio: {e}")
 
     duration = round(len(audio_array) / TARGET_SR, 3)
 
-    # ── STT via external evoxtral API ────────────────────────────────────────
+    # ── STT (local model, run in thread pool) ────────────────────────────────
     try:
-        t0 = time.perf_counter()
-        result = await _call_evoxtral(wav_path)
-        full_text = result.get("transcription", "")
+        t0   = time.perf_counter()
+        loop = asyncio.get_running_loop()
+        full_text = await loop.run_in_executor(None, _transcribe_sync, wav_path)
         print(f"[voxtral] {req_id} STT done {(time.perf_counter()-t0)*1000:.0f}ms text_len={len(full_text)}")
     finally:
         if wav_path and os.path.exists(wav_path):
-            try:
-                os.unlink(wav_path)
-            except OSError:
-                pass
+            try: os.unlink(wav_path)
+            except OSError: pass
 
     # ── VAD segmentation + text distribution ─────────────────────────────────
     raw_segs, seg_method = _segments_from_vad(audio_array, TARGET_SR)
-    segs_with_text = _distribute_text(full_text, raw_segs)
+    segs_with_text       = _distribute_text(full_text, raw_segs)
 
-    # ── FER (video files only, runs in thread pool to avoid blocking) ─────────
-    has_fer = False
+    # ── FER (video only) ─────────────────────────────────────────────────────
+    has_fer       = False
     face_emotions: dict[int, str] = {}
     if _is_video(filename) and _fer_session is not None:
         t0 = time.perf_counter()
-        loop = asyncio.get_running_loop()
         face_emotions = await loop.run_in_executor(None, _fer_for_segments, tmp_path, raw_segs)
         has_fer = bool(face_emotions)
         print(f"[voxtral] {req_id} FER done {(time.perf_counter()-t0)*1000:.0f}ms faces={len(face_emotions)}")
 
-    # Clean up original upload
     if tmp_path and os.path.exists(tmp_path):
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        try: os.unlink(tmp_path)
+        except OSError: pass
 
     # ── Build segments ────────────────────────────────────────────────────────
     segments = []
     for s in segs_with_text:
-        emo = _parse_emotion(s["text"])
+        emo      = _parse_emotion(s["text"])
         seg_data = {
             "id":      s["id"],
             "speaker": s["speaker"],
@@ -511,10 +538,10 @@ async def transcribe_diarize(audio: UploadFile = File(...)):
     print(f"[voxtral] {req_id} complete total={total_ms:.0f}ms segments={len(segments)} has_fer={has_fer}")
 
     return {
-        "segments": segments,
-        "duration": duration,
-        "text": full_text,
-        "filename": filename,
-        "diarization_method": seg_method,
-        "has_video": has_fer,
+        "segments":            segments,
+        "duration":            duration,
+        "text":                full_text,
+        "filename":            filename,
+        "diarization_method":  seg_method,
+        "has_video":           has_fer,
     }
