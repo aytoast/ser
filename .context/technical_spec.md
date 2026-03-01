@@ -1,5 +1,5 @@
 ## core components
-- **base model:** mistral voxtral.
+- **base model:** Ethostral (fine-tuned Mistral).
 - **tracking and evaluation:** weights and biases.
 - **platform:** hugging face for model and adapter hosting.
 

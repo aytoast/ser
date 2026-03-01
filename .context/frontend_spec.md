@@ -1,5 +1,5 @@
 ## visual identity
-- **typography:** high-precision monospaced fonts (JetBrains Mono) for data, alongside maia-style sans-serif for UI.
+- **typography:** jetbrains mono for mono font, lato for sanserif
 - **componentry:** shadcn ui base.
 - **style profile:** maia (radix-maia) — characterized by soft rounding, high-contrast surfaces, and subtle glassmorphism.
 - **iconography:** phosphor icons (thin or regular weight).
