@@ -43,12 +43,6 @@ RUN cd demo && NEXT_PUBLIC_API_URL="" npm run build \
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY supervisord.conf /etc/supervisor/conf.d/app.conf
 
-# ─── Model weight cache ───────────────────────────────────────────────────────
-# /data is persisted across Space restarts on HuggingFace Spaces
-RUN mkdir -p /data/models
-ENV TRANSFORMERS_CACHE=/data/models
-ENV HF_HOME=/data/models
-
 # HuggingFace Spaces public port
 EXPOSE 7860
 
