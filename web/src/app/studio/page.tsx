@@ -713,37 +713,44 @@ function StudioContent() {
             throw new Error(errData.error ?? "Submit failed")
           }
 
-          const { job_id } = await submitRes.json() as { job_id: string }
+          const submitJson = await submitRes.json() as { job_id?: string } & Partial<DiarizeResult>
 
-          // 2. Poll until done (every 3s)
-          const POLL_INTERVAL = 3000
-          const MAX_POLLS = 60 * 20  // 60 min max
-          let polls = 0
+          let data: DiarizeResult
 
-          const data = await new Promise<DiarizeResult>((resolve, reject) => {
-            const tick = async () => {
-              polls++
-              if (polls > MAX_POLLS) {
-                reject(new Error("Processing timed out after 60 minutes"))
-                return
-              }
-              try {
-                const pollRes = await fetch(`${API_BASE}/api/job/${job_id}`)
-                const pollData = await pollRes.json()
-                if (pollData.status === "done") {
-                  resolve(pollData.data as DiarizeResult)
-                } else if (pollData.status === "error") {
-                  reject(new Error(pollData.error ?? "Processing failed"))
-                } else {
-                  // still pending — keep polling
-                  setTimeout(tick, POLL_INTERVAL)
+          if (submitJson.job_id) {
+            // New async format: poll for result
+            const job_id = submitJson.job_id
+            const POLL_INTERVAL = 3000
+            const MAX_POLLS = 60 * 20  // 60 min max
+            let polls = 0
+
+            data = await new Promise<DiarizeResult>((resolve, reject) => {
+              const tick = async () => {
+                polls++
+                if (polls > MAX_POLLS) {
+                  reject(new Error("Processing timed out after 60 minutes"))
+                  return
                 }
-              } catch (e) {
-                reject(e)
+                try {
+                  const pollRes = await fetch(`${API_BASE}/api/job/${job_id}`)
+                  const pollData = await pollRes.json()
+                  if (pollData.status === "done") {
+                    resolve(pollData.data as DiarizeResult)
+                  } else if (pollData.status === "error") {
+                    reject(new Error(pollData.error ?? "Processing failed"))
+                  } else {
+                    setTimeout(tick, POLL_INTERVAL)
+                  }
+                } catch (e) {
+                  reject(e)
+                }
               }
-            }
-            setTimeout(tick, POLL_INTERVAL)
-          })
+              setTimeout(tick, POLL_INTERVAL)
+            })
+          } else {
+            // Fallback: old proxy / local dev returned result directly
+            data = submitJson as DiarizeResult
+          }
 
           updateSession(session.id, data)
           const updated = getSession(session.id)
