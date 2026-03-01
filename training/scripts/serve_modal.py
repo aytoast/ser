@@ -52,19 +52,26 @@ ADAPTER_ID = "YongkangZOU/evoxtral-rl"
 
 
 def _decode_audio(audio_bytes):
-    """Decode audio bytes to float32 numpy array at 16kHz."""
-    import numpy as np
-    import soundfile as sf
-    import librosa
-    import io
+    """Decode audio bytes to float32 numpy array at 16kHz.
 
-    audio_array, sr = sf.read(io.BytesIO(audio_bytes))
-    audio_array = audio_array.astype(np.float32)
-    if audio_array.ndim > 1:
-        audio_array = audio_array.mean(axis=1)
-    if sr != 16000:
-        audio_array = librosa.resample(audio_array, orig_sr=sr, target_sr=16000)
-    return audio_array
+    Uses librosa (backed by ffmpeg) so all common formats work:
+    WAV, FLAC, MP3, MP4, M4A, WebM, OGG, etc.
+    """
+    import numpy as np
+    import librosa
+    import tempfile
+    import os
+
+    # librosa needs a file path (uses ffmpeg under the hood for non-WAV)
+    with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as f:
+        f.write(audio_bytes)
+        tmp_path = f.name
+    try:
+        audio_array, sr = librosa.load(tmp_path, sr=16000, mono=True)
+    finally:
+        os.unlink(tmp_path)
+
+    return audio_array.astype(np.float32)
 
 
 def _prepare_inputs(processor, audio_array, language, device):
