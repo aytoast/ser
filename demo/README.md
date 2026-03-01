@@ -30,7 +30,7 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-First run may download the model (~8–16GB). Optional: set `HF_TOKEN` for pyannote-based speaker diarization.
+First run may download the model (~8–16GB).
 
 ### 2. Server layer (Node, port 3000)
 
@@ -91,13 +91,12 @@ Simple transcription without diarization.
 
 ### POST /api/transcribe-diarize
 
-Full pipeline: transcription + speaker diarization + per-segment emotion analysis.
+Full pipeline: transcription + VAD sentence segmentation + per-segment emotion analysis. All segments are labelled `SPEAKER_00`.
 
 | | |
 |--|--|
 | **Content-Type** | `multipart/form-data` |
 | **Body** | `audio` — audio file (wav, mp3, flac, ogg, m4a, webm) |
-| **Query** | `num_speakers` (optional, integer 1–10) — hint for speaker count; 0 = auto-detect |
 | **Limits** | ≤ 100 MB; timeout 10 min |
 
 **Response (200)**
@@ -119,11 +118,11 @@ Full pipeline: transcription + speaker diarization + per-segment emotion analysi
   "duration": 42.3,
   "text": "full transcript text",
   "filename": "recording.m4a",
-  "diarization_method": "vad_mfcc"
+  "diarization_method": "vad"
 }
 ```
 
-`diarization_method` is either `"pyannote"` (when `HF_TOKEN` is set on the model) or `"vad_mfcc"` (fallback).
+`diarization_method`: `"vad"` (silence-gap segmentation by sentence boundaries).
 
 ---
 
