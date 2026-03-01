@@ -110,8 +110,9 @@ def _init_fer() -> None:
 
     candidates = [
         os.environ.get("FER_MODEL_PATH", ""),
-        "/app/models/emotion_model_web.onnx",
-        os.path.join(os.path.dirname(__file__), "../../models/emotion_model_web.onnx"),
+        "/app/models/emotion_model_web.onnx",                                          # Docker
+        os.path.join(os.path.dirname(__file__), "../models/emotion_model_web.onnx"),   # local: api/../models/
+        os.path.join(os.path.dirname(__file__), "../../models/emotion_model_web.onnx"), # fallback
     ]
     fer_path = next((p for p in candidates if p and os.path.exists(p)), None)
     if not fer_path:
