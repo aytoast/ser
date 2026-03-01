@@ -118,11 +118,12 @@ async def lifespan(app: FastAPI):
     try:
         sr = getattr(getattr(processor, "feature_extractor", None), "sampling_rate", 16000)
         dummy = np.zeros(sr, dtype=np.float32)  # 1 second of silence
-        conversation = [{"role": "user", "content": [{"type": "audio", "audio": dummy}]}]
         with torch.inference_mode():
-            dummy_inputs = processor.apply_chat_template(
-                conversation, return_tensors="pt", tokenize=True
-            ).to(_device)
+            dummy_inputs = processor(dummy, return_tensors="pt")
+            dummy_inputs = {
+                k: (v.to(_device, dtype=_dtype) if v.is_floating_point() else v.to(_device))
+                for k, v in dummy_inputs.items()
+            }
             model.generate(**dummy_inputs, max_new_tokens=1)
         print("[voxtral] Warm-up complete — first request will be fast")
     except Exception as e:
@@ -407,13 +408,10 @@ def _transcribe(audio_array: np.ndarray) -> str:
 
     try:
         t0 = time.perf_counter()
-        conversation = [{"role": "user", "content": [{"type": "audio", "audio": audio_array}]}]
-        inputs = processor.apply_chat_template(
-            conversation, return_tensors="pt", tokenize=True
-        )
-        print(f"[_transcribe] apply_chat_template OK {(time.perf_counter()-t0)*1000:.0f}ms keys={list(inputs.keys())}", flush=True)
+        inputs = processor(audio_array, return_tensors="pt")
+        print(f"[_transcribe] processor() OK {(time.perf_counter()-t0)*1000:.0f}ms keys={list(inputs.keys())}", flush=True)
     except Exception:
-        print(f"[_transcribe] apply_chat_template FAILED:\n{traceback.format_exc()}", flush=True)
+        print(f"[_transcribe] processor() FAILED:\n{traceback.format_exc()}", flush=True)
         raise
 
     try:
@@ -441,8 +439,13 @@ def _transcribe(audio_array: np.ndarray) -> str:
         raise
 
     try:
-        text = processor.decode(outputs[0][input_len:], skip_special_tokens=True).strip()
-        print(f"[_transcribe] decode OK text={repr(text[:120])}", flush=True)
+        # For direct processor() call, decode full output (no input prefix to strip)
+        text = processor.decode(outputs[0], skip_special_tokens=True).strip()
+        print(f"[_transcribe] decode OK (full) text={repr(text[:200])}", flush=True)
+        # Also log the new-tokens-only version for comparison
+        if input_len > 0 and outputs.shape[1] > input_len:
+            new_only = processor.decode(outputs[0][input_len:], skip_special_tokens=True).strip()
+            print(f"[_transcribe] decode new-only text={repr(new_only[:200])}", flush=True)
         return text
     except Exception:
         print(f"[_transcribe] decode FAILED:\n{traceback.format_exc()}", flush=True)
