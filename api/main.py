@@ -37,12 +37,13 @@ def _init_model() -> None:
     from transformers import VoxtralForConditionalGeneration, AutoProcessor
     from peft import PeftModel
 
+    # bfloat16 on both GPU and CPU — halves memory vs float32 (~6 GB vs ~12 GB)
+    # PyTorch CPU supports bfloat16 natively since 1.12
+    _model_dtype = torch.bfloat16
     if torch.cuda.is_available():
-        _model_dtype  = torch.bfloat16
-        device_map    = "auto"
+        device_map = "auto"
     else:
-        _model_dtype  = torch.float32
-        device_map    = "cpu"
+        device_map = "cpu"
 
     print(f"[voxtral] Loading processor {MODEL_ID} ...")
     _processor = AutoProcessor.from_pretrained(MODEL_ID)
@@ -50,7 +51,7 @@ def _init_model() -> None:
     print(f"[voxtral] Loading base model {MODEL_ID} (dtype={_model_dtype}) ...")
     base_model = VoxtralForConditionalGeneration.from_pretrained(
         MODEL_ID,
-        torch_dtype=_model_dtype,
+        dtype=_model_dtype,
         device_map=device_map,
     )
 
@@ -71,6 +72,7 @@ def _transcribe_sync(wav_path: str) -> str:
     inputs = _processor.apply_transcription_request(
         audio=[audio_array],
         format=["WAV"],
+        language="en",
         model_id=MODEL_ID,
         return_tensors="pt",
     )
@@ -254,6 +256,27 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.get("/debug-inference")
+async def debug_inference():
+    """Quick smoke-test: synthesize 0.5s of silence and run a minimal generate() call."""
+    import traceback, torch
+    if _model is None:
+        return {"ok": False, "error": "model not loaded"}
+    try:
+        import numpy as np
+        silence = np.zeros(8000, dtype=np.float32)  # 0.5 s @ 16 kHz
+        import tempfile, soundfile as sf, asyncio
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            wav_path = f.name
+        sf.write(wav_path, silence, 16000)
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, _transcribe_sync, wav_path)
+        import os; os.unlink(wav_path)
+        return {"ok": True, "text": text, "dtype": str(_model_dtype), "device": str(_model_device)}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
 
 
 @app.get("/health")
@@ -494,6 +517,10 @@ async def transcribe_diarize(audio: UploadFile = File(...)):
         loop = asyncio.get_running_loop()
         full_text = await loop.run_in_executor(None, _transcribe_sync, wav_path)
         print(f"[voxtral] {req_id} STT done {(time.perf_counter()-t0)*1000:.0f}ms text_len={len(full_text)}")
+    except Exception as e:
+        import traceback as _tb
+        print(f"[voxtral] {req_id} STT error: {e}\n{_tb.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
     finally:
         if wav_path and os.path.exists(wav_path):
             try: os.unlink(wav_path)
