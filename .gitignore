@@ -55,3 +55,4 @@ __pycache__/
 # claude code
 .claude/
 .mcp.json
+models/
