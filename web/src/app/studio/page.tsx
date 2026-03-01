@@ -28,8 +28,6 @@ import { cn } from "@/lib/utils"
 import { MagnifyingGlass } from "@phosphor-icons/react"
 import NextImage from "next/image"
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000"
-
 // --- Constants ---
 const SPEAKER_COLORS = [
   { avatar: "bg-blue-400", track: "bg-blue-200" },
@@ -669,12 +667,13 @@ function StudioContent() {
   // Per-segment DOM element refs for auto-scroll
   const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map())
 
-  const [session, setSession] = useState(() => sessionId ? getSession(sessionId) : null)
+  const [session, setSession] = useState<ReturnType<typeof getSession>>(null)
   const [activeId, setActiveId] = useState<number>(1)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [isProcessing, setIsProcessing] = useState(false)
   const [processError, setProcessError] = useState<string | null>(null)
+  const [streamingText, setStreamingText] = useState<string | null>(null)
 
   // Sync session state with sessionId param
   useEffect(() => {
@@ -688,8 +687,8 @@ function StudioContent() {
   }, [sessionId])
 
   // Automatic processing for pending sessions.
-  // Uses async job polling: POST returns {job_id} immediately, then GET /api/job/:id
-  // until done — avoids HF Spaces ~3 min proxy timeout during long CPU inference.
+  // Uses Modal streaming API: tokens arrive via SSE for live display,
+  // then the full transcription is converted to a DiarizeResult.
   useEffect(() => {
     if (!session || processingRef.current || processError) return
 
@@ -698,58 +697,75 @@ function StudioContent() {
       const process = async () => {
         setIsProcessing(true)
         setProcessError(null)
+        setStreamingText("")
         try {
-          // 1. Submit job — server responds immediately with job_id (202)
           const formData = new FormData()
           formData.append("audio", session.file!, session.filename)
 
-          const submitRes = await fetch(`${API_BASE}/api/transcribe-diarize`, {
+          const res = await fetch("/api/transcribe-stream", {
             method: "POST",
             body: formData,
           })
 
-          if (!submitRes.ok) {
-            const errData = await submitRes.json().catch(() => ({}))
-            throw new Error(errData.error ?? "Submit failed")
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}))
+            throw new Error(errData.error ?? "Transcription failed")
           }
 
-          const submitJson = await submitRes.json() as { job_id?: string } & Partial<DiarizeResult>
+          // Consume SSE stream
+          const reader = res.body!.getReader()
+          const decoder = new TextDecoder()
+          let fullText = ""
+          let buffer = ""
 
-          let data: DiarizeResult
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
 
-          if (submitJson.job_id) {
-            // New async format: poll for result
-            const job_id = submitJson.job_id
-            const POLL_INTERVAL = 3000
-            const MAX_POLLS = 60 * 20  // 60 min max
-            let polls = 0
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split("\n")
+            buffer = lines.pop() ?? ""
 
-            data = await new Promise<DiarizeResult>((resolve, reject) => {
-              const tick = async () => {
-                polls++
-                if (polls > MAX_POLLS) {
-                  reject(new Error("Processing timed out after 60 minutes"))
-                  return
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue
+              try {
+                const payload = JSON.parse(line.slice(6))
+                if (payload.token) {
+                  fullText += payload.token
+                  setStreamingText(fullText)
                 }
-                try {
-                  const pollRes = await fetch(`${API_BASE}/api/job/${job_id}`)
-                  const pollData = await pollRes.json()
-                  if (pollData.status === "done") {
-                    resolve(pollData.data as DiarizeResult)
-                  } else if (pollData.status === "error") {
-                    reject(new Error(pollData.error ?? "Processing failed"))
-                  } else {
-                    setTimeout(tick, POLL_INTERVAL)
-                  }
-                } catch (e) {
-                  reject(e)
+                if (payload.done) {
+                  fullText = payload.transcription ?? fullText
+                  setStreamingText(fullText)
                 }
+              } catch {
+                // skip malformed SSE lines
               }
-              setTimeout(tick, POLL_INTERVAL)
-            })
-          } else {
-            // Fallback: old proxy / local dev returned result directly
-            data = submitJson as DiarizeResult
+            }
+          }
+
+          // Get audio duration from the media element
+          const mediaDuration = mediaRef.current?.duration || 0
+
+          // Derive emotion from the first bracket tag in transcription
+          const firstTagMatch = fullText.match(/\[([^\]]+)\]/)
+          const firstTag = firstTagMatch ? getTagEntry(firstTagMatch[1]) : null
+
+          // Build DiarizeResult from plain transcription
+          const data: DiarizeResult = {
+            segments: fullText.trim() ? [{
+              id: 1,
+              speaker: "SPEAKER_00",
+              start: 0,
+              end: mediaDuration || 30,
+              text: fullText.trim(),
+              emotion: firstTag?.emotion ?? "Neutral",
+              valence: firstTag?.valence ?? 0,
+              arousal: firstTag?.arousal ?? 0,
+            }] : [],
+            duration: mediaDuration || 30,
+            text: fullText.trim(),
+            filename: session.filename,
           }
 
           updateSession(session.id, data)
@@ -758,9 +774,11 @@ function StudioContent() {
           if (updated?.data.segments && updated.data.segments.length > 0) {
             setActiveId(updated.data.segments[0].id)
           }
+          setStreamingText(null)
         } catch (e) {
           processingRef.current = false
           setProcessError(e instanceof Error ? e.message : "Request failed")
+          setStreamingText(null)
         } finally {
           setIsProcessing(false)
         }
@@ -850,7 +868,9 @@ function StudioContent() {
             {isProcessing && (
               <Badge variant="secondary" className="bg-blue-500/10 text-blue-500 hover:bg-blue-500/10 border-blue-500/20 gap-2 font-medium px-3 h-8">
                 <div className="size-2 rounded-full bg-blue-500 animate-pulse" />
-                Analysing Speech...
+                {streamingText !== null && streamingText.length > 0
+                  ? "Streaming..."
+                  : "Connecting to Evoxtral..."}
               </Badge>
             )}
 
@@ -889,15 +909,37 @@ function StudioContent() {
         <div className="flex-1 overflow-hidden flex flex-col min-w-0 relative">
           {isProcessing && segments.length === 0 && (
             <div className="absolute inset-0 z-20 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-500">
-              <div className="size-16 mb-6 relative">
-                <div className="absolute inset-0 border-4 border-muted rounded-full" />
-                <div className="absolute inset-0 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                <Waveform size={24} className="absolute inset-0 m-auto text-primary animate-pulse" />
-              </div>
-              <h2 className="text-xl font-bold mb-2">Analysing Audio</h2>
-              <p className="text-muted-foreground text-sm max-w-xs mx-auto">
-                Voxtral is currently transcribing and identifying speakers. This should only take a moment...
-              </p>
+              {streamingText !== null && streamingText.length > 0 ? (
+                /* Live streaming tokens */
+                <div className="max-w-lg w-full space-y-4">
+                  <div className="flex items-center justify-center gap-2 mb-4">
+                    <div className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-sm font-semibold text-emerald-600">Streaming transcription...</span>
+                  </div>
+                  <div className="bg-muted/40 rounded-xl p-6 text-left max-h-64 overflow-y-auto">
+                    <p className="text-[15px] leading-relaxed font-medium tracking-tight whitespace-pre-wrap">
+                      {streamingText}
+                      <span className="inline-block w-[2px] h-[1em] bg-primary animate-pulse ml-0.5 align-text-bottom" />
+                    </p>
+                  </div>
+                  <p className="text-muted-foreground text-xs">
+                    Powered by Evoxtral — expressive tagged transcription
+                  </p>
+                </div>
+              ) : (
+                /* Initial loading spinner before first token arrives */
+                <>
+                  <div className="size-16 mb-6 relative">
+                    <div className="absolute inset-0 border-4 border-muted rounded-full" />
+                    <div className="absolute inset-0 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+                    <Waveform size={24} className="absolute inset-0 m-auto text-primary animate-pulse" />
+                  </div>
+                  <h2 className="text-xl font-bold mb-2">Transcribing Audio</h2>
+                  <p className="text-muted-foreground text-sm max-w-xs mx-auto">
+                    Connecting to Evoxtral... tokens will stream in real-time.
+                  </p>
+                </>
+              )}
             </div>
           )}
 
