@@ -506,6 +506,7 @@ function RightPanel({
               )}
             </div>
           )}
+
         </div>
       </ScrollArea>
     </div>
