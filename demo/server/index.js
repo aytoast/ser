@@ -114,6 +114,17 @@ async function proxyToModel(req, res, modelPath, timeoutMs) {
   }
 }
 
+// ─── /api/debug-inference (proxies to model /debug-inference) ────────────────
+app.get("/api/debug-inference", async (req, res) => {
+  try {
+    const r = await fetch(`${MODEL_URL}/debug-inference`, { signal: AbortSignal.timeout(60000) });
+    const data = await r.json().catch(() => ({ error: "non-JSON response from model" }));
+    res.json(data);
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
 // ─── /api/speech-to-text ──────────────────────────────────────────────────────
 app.post("/api/speech-to-text", upload.single("audio"), (req, res) => {
   return proxyToModel(req, res, "/transcribe", TRANSCRIBE_TIMEOUT_MS);
