@@ -107,14 +107,22 @@ function SegmentRow({
         <p className="text-[11px] text-muted-foreground font-medium">{fmtTime(seg.end)}</p>
       </div>
 
-      {/* Emotion badge */}
-      <div className="flex-shrink-0 flex items-start pt-4 pr-4">
+      {/* Emotion badges */}
+      <div className="flex-shrink-0 flex flex-col items-end gap-1 pt-4 pr-4">
         <Badge
           variant="outline"
           className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0 border-border text-muted-foreground"
         >
           {seg.emotion}
         </Badge>
+        {seg.face_emotion && (
+          <Badge
+            variant="outline"
+            className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0 border-border text-muted-foreground/60"
+          >
+            {seg.face_emotion}
+          </Badge>
+        )}
       </div>
     </div>
   )
@@ -126,6 +134,8 @@ function RightPanel({
   audioUrl,
   filename,
   isPlaying,
+  isVideo,
+  mediaRef,
   currentTime,
   duration,
   onToggle,
@@ -134,6 +144,8 @@ function RightPanel({
   audioUrl: string
   filename: string
   isPlaying: boolean
+  isVideo: boolean
+  mediaRef: React.RefObject<HTMLVideoElement>
   currentTime: number
   duration: number
   onToggle: () => void
@@ -142,14 +154,26 @@ function RightPanel({
 
   return (
     <div className="flex flex-col h-full border-l border-border bg-card">
-      {/* Audio preview panel */}
+      {/* Media preview panel */}
       <div className="aspect-video w-full bg-slate-950 flex items-center justify-center flex-shrink-0 relative overflow-hidden">
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/20">
-          <Waveform size={36} />
-          <span className="text-[10px] font-bold uppercase tracking-widest truncate max-w-[80%] text-center px-2">
-            {filename}
-          </span>
-        </div>
+        {isVideo && audioUrl ? (
+          <video
+            ref={mediaRef}
+            src={audioUrl}
+            preload="metadata"
+            className="w-full h-full object-contain"
+          />
+        ) : (
+          <>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/20">
+              <Waveform size={36} />
+              <span className="text-[10px] font-bold uppercase tracking-widest truncate max-w-[80%] text-center px-2">
+                {filename}
+              </span>
+            </div>
+            <video ref={mediaRef} src={audioUrl || undefined} preload="metadata" className="hidden" />
+          </>
+        )}
         {/* Controls bar */}
         <div className="absolute bottom-0 left-0 right-0 h-8 bg-black/70 flex items-center px-2 gap-2">
           <button
@@ -219,9 +243,15 @@ function RightPanel({
                 {activeSegment ? (
                   <>
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground">Emotion</span>
+                      <span className="text-muted-foreground">Voice Emotion</span>
                       <Badge variant="outline" className="font-bold text-[10px]">{activeSegment.emotion}</Badge>
                     </div>
+                    {activeSegment.face_emotion && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">Face Emotion</span>
+                        <Badge variant="outline" className="font-bold text-[10px] text-muted-foreground/70">{activeSegment.face_emotion}</Badge>
+                      </div>
+                    )}
                     <div className="space-y-1">
                       <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                         <span>Valence</span>
@@ -354,7 +384,7 @@ function StudioContent() {
   const searchParams = useSearchParams()
   const sessionId = searchParams.get("s")
 
-  const audioRef = useRef<HTMLAudioElement>(null)
+  const mediaRef = useRef<HTMLVideoElement>(null)
   const [activeId, setActiveId] = useState<number>(1)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -364,45 +394,43 @@ function StudioContent() {
   const audioUrl = session?.audioUrl ?? ""
   const filename = session?.filename ?? MOCK_FILENAME
   const duration = session?.data.duration ?? MOCK_DURATION
+  const isVideo = session?.data.has_video ?? false
 
   const speakerMap = useMemo(() => buildSpeakerMap(segments), [segments])
   const activeSegment = segments.find(s => s.id === activeId) ?? segments[0] ?? null
 
   useEffect(() => {
-    const audio = audioRef.current
-    if (!audio) return
-    const onTime = () => setCurrentTime(audio.currentTime)
+    const media = mediaRef.current
+    if (!media) return
+    const onTime = () => setCurrentTime(media.currentTime)
     const onPlay = () => setIsPlaying(true)
     const onPause = () => setIsPlaying(false)
-    audio.addEventListener("timeupdate", onTime)
-    audio.addEventListener("play", onPlay)
-    audio.addEventListener("pause", onPause)
+    media.addEventListener("timeupdate", onTime)
+    media.addEventListener("play", onPlay)
+    media.addEventListener("pause", onPause)
     return () => {
-      audio.removeEventListener("timeupdate", onTime)
-      audio.removeEventListener("play", onPlay)
-      audio.removeEventListener("pause", onPause)
+      media.removeEventListener("timeupdate", onTime)
+      media.removeEventListener("play", onPlay)
+      media.removeEventListener("pause", onPause)
     }
   }, [])
 
   const handleSegmentClick = (seg: Segment) => {
     setActiveId(seg.id)
-    if (audioRef.current && audioUrl) {
-      audioRef.current.currentTime = seg.start
+    if (mediaRef.current && audioUrl) {
+      mediaRef.current.currentTime = seg.start
     }
   }
 
   const togglePlay = () => {
-    const audio = audioRef.current
-    if (!audio || !audioUrl) return
-    if (isPlaying) audio.pause()
-    else audio.play()
+    const media = mediaRef.current
+    if (!media || !audioUrl) return
+    if (isPlaying) media.pause()
+    else media.play()
   }
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
-      {/* Hidden audio element */}
-      <audio ref={audioRef} src={audioUrl || undefined} preload="metadata" className="hidden" />
-
       {/* Top Bar */}
       <header className="h-11 border-b border-border bg-card flex items-center px-4 gap-3 flex-shrink-0 sticky top-0 z-50">
         <Link href="/">
@@ -464,6 +492,8 @@ function StudioContent() {
             audioUrl={audioUrl}
             filename={filename}
             isPlaying={isPlaying}
+            isVideo={isVideo}
+            mediaRef={mediaRef}
             currentTime={currentTime}
             duration={duration}
             onToggle={togglePlay}
