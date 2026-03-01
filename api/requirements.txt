@@ -1,0 +1,18 @@
+# Voxtral local inference + FER (facial emotion recognition)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.9
+librosa>=0.10.0
+soundfile>=0.12.0
+numpy>=1.24.0
+# Voxtral model
+torch>=2.4.0
+transformers==4.56.0
+peft>=0.13.0
+accelerate>=1.0.0
+mistral-common
+safetensors
+sentencepiece
+# FER inference
+onnxruntime>=1.16.0
+opencv-python-headless>=4.8.0
