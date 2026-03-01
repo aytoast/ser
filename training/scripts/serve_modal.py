@@ -43,7 +43,7 @@ app = modal.App("evoxtral-api", image=image)
 hf_cache = modal.Volume.from_name("evoxtral-hf-cache", create_if_missing=True)
 
 MODEL_ID = "mistralai/Voxtral-Mini-3B-2507"
-ADAPTER_ID = "YongkangZOU/evoxtral-lora"
+ADAPTER_ID = "YongkangZOU/evoxtral-rl"
 
 
 @app.cls(
@@ -89,7 +89,7 @@ class EvoxtralModel:
 
         @web_app.get("/health", summary="Health check")
         async def health():
-            return {"status": "ok", "model": "evoxtral-lora", "base": MODEL_ID}
+            return {"status": "ok", "model": "evoxtral-rl", "base": MODEL_ID}
 
         @web_app.post(
             "/transcribe",
@@ -145,7 +145,7 @@ class EvoxtralModel:
             return {
                 "transcription": transcription,
                 "language": language,
-                "model": "evoxtral-lora",
+                "model": "evoxtral-rl",
             }
 
         return web_app
