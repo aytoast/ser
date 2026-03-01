@@ -32,6 +32,7 @@ image = (
         "safetensors",
         "sentencepiece",
         "mistral-common",
+        "torchcodec",
         gpu="A10G",
     )
     .env({
@@ -139,11 +140,23 @@ def generate_and_score(num_samples: int = 4, temperature: float = 0.7):
     train_ds = ds["train"]
 
     print(f"Generating {num_samples} completions per sample for {len(train_ds)} training examples...")
+    import time
+    start_time = time.time()
 
-    curated_data = []
-    total_reward = 0.0
+    # Resume from checkpoint if exists
+    checkpoint_path = "/output/rl_curated_checkpoint.json"
+    if Path(checkpoint_path).exists():
+        with open(checkpoint_path) as f:
+            curated_data = json.load(f)
+        start_idx = len(curated_data)
+        total_reward = sum(d["reward"] for d in curated_data)
+        print(f"Resuming from checkpoint: {start_idx} samples already done")
+    else:
+        curated_data = []
+        total_reward = 0.0
+        start_idx = 0
 
-    for i in range(len(train_ds)):
+    for i in range(start_idx, len(train_ds)):
         row = train_ds[i]
         reference = row["tagged_text"]
         audio_array = row["audio"]["array"]
@@ -158,26 +171,28 @@ def generate_and_score(num_samples: int = 4, temperature: float = 0.7):
         )
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-        # Generate N completions with sampling
+        # Generate all N completions in one call with num_return_sequences
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=512,
+                do_sample=True,
+                temperature=temperature,
+                top_p=0.9,
+                num_return_sequences=num_samples,
+            )
+
+        input_len = inputs["input_ids"].shape[1]
+
+        # Score each completion, keep best
         best_reward = -1.0
         best_prediction = None
         best_details = None
 
         for s in range(num_samples):
-            with torch.no_grad():
-                output_ids = model.generate(
-                    **inputs,
-                    max_new_tokens=512,
-                    do_sample=True,
-                    temperature=temperature,
-                    top_p=0.9,
-                )
-
-            input_len = inputs["input_ids"].shape[1]
             prediction = processor.tokenizer.decode(
-                output_ids[0][input_len:], skip_special_tokens=True
+                output_ids[s][input_len:], skip_special_tokens=True
             )
-
             reward, details = compute_reward(prediction, reference)
             if reward > best_reward:
                 best_reward = reward
@@ -193,14 +208,26 @@ def generate_and_score(num_samples: int = 4, temperature: float = 0.7):
         })
         total_reward += best_reward
 
-        if i < 5 or i % 100 == 0:
+        if i < 5 or i % 50 == 0:
+            elapsed = time.time() - start_time
+            done = i - start_idx + 1
+            rate = done / elapsed if elapsed > 0 else 0
+            eta = (len(train_ds) - i - 1) / rate if rate > 0 else 0
             print(f"  [{i}/{len(train_ds)}] reward={best_reward:.3f} "
                   f"wer_acc={best_details['wer_accuracy']:.3f} "
                   f"tag_f1={best_details['tag_f1']:.3f} "
-                  f"hall={best_details['hall_rate']:.3f}")
+                  f"hall={best_details['hall_rate']:.3f} "
+                  f"({rate:.1f} samples/s, ETA {eta/60:.0f}min)")
             if i < 3:
                 print(f"    ref: {reference[:80]}...")
                 print(f"    best: {best_prediction[:80]}...")
+
+        # Save checkpoint every 50 samples
+        if (i + 1) % 50 == 0:
+            with open(checkpoint_path, "w") as f:
+                json.dump(curated_data, f)
+            output_vol.commit()
+            print(f"  [checkpoint saved: {len(curated_data)} samples]")
 
     avg_reward = total_reward / len(curated_data)
     print(f"\nGeneration complete! Avg reward: {avg_reward:.4f}")
