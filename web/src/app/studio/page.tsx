@@ -96,18 +96,32 @@ function SegmentRow({
   const segDuration = Math.max(seg.end - seg.start, 0.001)
 
   // Strip [bracket] tags from text for character counting/highlighting
-  // They'll be rendered as inline badges instead
   const cleanText = useMemo(() => seg.text.replace(/\[[^\]]+\]/g, "").trim(), [seg.text])
-  const bracketTags = useMemo(() => {
-    const tags: string[] = []
-    const re = /\[([^\]]+)\]/g
-    let m
-    while ((m = re.exec(seg.text)) !== null) tags.push(m[1])
-    return tags
-  }, [seg.text])
 
   // Split text into Unicode-aware characters (handles CJK, emoji, etc.)
   const chars = useMemo(() => Array.from(cleanText), [cleanText])
+
+  // Parse text into ordered tokens: plain text chunks and [bracket] tags at correct positions.
+  // Tag tokens carry cleanOffset = number of clean chars before them (used for badge click-to-seek).
+  const tokens = useMemo(() => {
+    type Token = { type: "text"; content: string } | { type: "tag"; content: string; cleanOffset: number }
+    const result: Token[] = []
+    let lastIndex = 0
+    let cleanCharCount = 0
+    const re = /\[([^\]]+)\]/g
+    let m
+    while ((m = re.exec(seg.text)) !== null) {
+      if (m.index > lastIndex) {
+        const chunk = seg.text.slice(lastIndex, m.index)
+        result.push({ type: "text", content: chunk })
+        cleanCharCount += Array.from(chunk).length
+      }
+      result.push({ type: "tag", content: m[1], cleanOffset: cleanCharCount })
+      lastIndex = m.index + m[0].length
+    }
+    if (lastIndex < seg.text.length) result.push({ type: "text", content: seg.text.slice(lastIndex) })
+    return result
+  }, [seg.text])
 
   // How many chars are "lit" (already played through)
   const litCount = state === "past"
@@ -117,6 +131,7 @@ function SegmentRow({
     : 0
 
   // Click on text → find char index via caret position → seek to proportional time
+  // Badge text nodes are excluded from char counting via data-badge filter
   function handleTextClick(e: React.MouseEvent<HTMLParagraphElement>) {
     e.stopPropagation()
     let charIndex = litCount
@@ -125,7 +140,17 @@ function SegmentRow({
       const range = document.caretRangeFromPoint(e.clientX, e.clientY)
       if (range) {
         let offset = range.startOffset
-        const walker = document.createTreeWalker(e.currentTarget, NodeFilter.SHOW_TEXT)
+        const walker = document.createTreeWalker(e.currentTarget, NodeFilter.SHOW_TEXT, {
+          acceptNode: (node) => {
+            // Skip text nodes inside [data-badge] elements
+            let el = node.parentElement
+            while (el && el !== e.currentTarget) {
+              if ((el as HTMLElement).dataset?.badge) return NodeFilter.FILTER_SKIP
+              el = el.parentElement
+            }
+            return NodeFilter.FILTER_ACCEPT
+          },
+        })
         let node = walker.nextNode()
         while (node && node !== range.startContainer) {
           offset += node.textContent?.length ?? 0
@@ -143,9 +168,6 @@ function SegmentRow({
     onSeek(Math.max(seg.start, Math.min(seg.end, seekTime)))
   }
 
-  const litText = chars.slice(0, litCount).join("")
-  const dimText = chars.slice(litCount).join("")
-
   return (
     <div
       ref={containerRef}
@@ -155,11 +177,6 @@ function SegmentRow({
         !active && "hover:bg-muted/20"
       )}
     >
-      {/* Active left accent bar */}
-      {active && (
-        <div className="absolute left-0 top-3 bottom-3 w-[3px] bg-primary/60 rounded-full" />
-      )}
-
       {/* Speaker */}
       <div className={cn(
         "w-32 flex items-center gap-3 shrink-0 pt-1 transition-opacity duration-300",
@@ -180,24 +197,45 @@ function SegmentRow({
       )}>
         <span className="text-[10px] font-sans font-medium text-muted-foreground/40 block tracking-tight">{fmtTime(seg.start)}</span>
 
-        {/* Two-span text: lit (dark) + dim (gray) — click anywhere to seek */}
+        {/* Tokenized text: text chunks lit/dim + [bracket] badges at correct inline positions */}
         <p
           className="text-[15px] leading-[1.6] font-medium tracking-tight whitespace-pre-wrap cursor-text select-none"
           onClick={handleTextClick}
         >
-          <span className="text-foreground">{litText}</span>
-          <span className="text-muted-foreground/30">{dimText}</span>
-          {/* [bracket] expression tags rendered inline */}
-          {bracketTags.map((tag, i) => (
-            <span key={i} className="inline-flex items-center ml-1.5 align-middle">
-              <Badge
-                variant="secondary"
-                className={cn("text-[10px] h-5 px-2 font-medium rounded-full transition-opacity duration-300 pointer-events-none", state === "past" && "opacity-40")}
-              >
-                {tag}
-              </Badge>
-            </span>
-          ))}
+          {(() => {
+            let cleanOffset = 0
+            return tokens.map((token, i) => {
+              if (token.type === "tag") {
+                const seekToTag = (e: React.MouseEvent) => {
+                  e.stopPropagation()
+                  if (chars.length === 0) return
+                  const seekTime = seg.start + (token.cleanOffset / chars.length) * segDuration
+                  onSeek(Math.max(seg.start, Math.min(seg.end, seekTime)))
+                }
+                return (
+                  <span key={i} data-badge="true" className="inline-flex items-center mx-1 align-middle cursor-pointer" onClick={seekToTag}>
+                    <Badge
+                      variant="secondary"
+                      className={cn("text-[10px] h-5 px-2 font-medium rounded-full transition-opacity duration-300 hover:bg-secondary/80", state === "past" && "opacity-40")}
+                    >
+                      {token.content}
+                    </Badge>
+                  </span>
+                )
+              }
+              // Text token — split into lit + dim based on global cleanOffset
+              const tokenChars = Array.from(token.content)
+              const tokenLen = tokenChars.length
+              const localLit = Math.max(0, Math.min(tokenLen, litCount - cleanOffset))
+              cleanOffset += tokenLen
+              return (
+                <React.Fragment key={i}>
+                  <span className="text-foreground">{tokenChars.slice(0, localLit).join("")}</span>
+                  <span className="text-muted-foreground/30">{tokenChars.slice(localLit).join("")}</span>
+                </React.Fragment>
+              )
+            })
+          })()}
         </p>
         <span className="text-[10px] font-sans font-medium text-muted-foreground/40 block tracking-tight">{fmtTime(seg.end)}</span>
       </div>
@@ -232,6 +270,47 @@ function isVideoFile(filename: string): boolean {
   return VIDEO_EXTS.has(ext)
 }
 
+// Mirrors Python _TAG_EMOTIONS in api/main.py — bracket tag → emotion label
+const TAG_EMOTIONS: Record<string, string> = {
+  "laughs": "Happy",
+  "laughing": "Happy",
+  "chuckles": "Happy",
+  "giggles": "Happy",
+  "sighs": "Sad",
+  "sighing": "Sad",
+  "cries": "Sad",
+  "crying": "Sad",
+  "whispers": "Calm",
+  "whispering": "Calm",
+  "shouts": "Angry",
+  "shouting": "Angry",
+  "exclaims": "Excited",
+  "gasps": "Surprised",
+  "hesitates": "Anxious",
+  "stutters": "Anxious",
+  "stammers": "Anxious",
+  "mumbles": "Sad",
+  "nervous": "Anxious",
+  "frustrated": "Frustrated",
+  "excited": "Excited",
+  "sad": "Sad",
+  "angry": "Angry",
+  "claps": "Happy",
+  "applause": "Happy",
+  "clears throat": "Neutral",
+  "pause": "Neutral",
+  "laughs nervously": "Anxious",
+}
+
+function getTagEmotion(tag: string): string | null {
+  const lower = tag.toLowerCase().trim()
+  if (TAG_EMOTIONS[lower]) return TAG_EMOTIONS[lower]
+  for (const [key, emotion] of Object.entries(TAG_EMOTIONS)) {
+    if (lower.includes(key)) return emotion
+  }
+  return null
+}
+
 // --- RightPanel ---
 function RightPanel({
   filename,
@@ -261,6 +340,37 @@ function RightPanel({
 
   // Per-second face emotion from timeline (more granular than segment majority-vote)
   const liveFaceEmo = faceTimeline[String(Math.floor(currentTime))] ?? liveSeg?.face_emotion ?? null
+
+  // Streaming speech emotion — derived from [bracket] tag positions within the active segment.
+  // Each tag's timing is estimated proportionally by clean-char position within the segment.
+  const liveSpeechEmo = useMemo(() => {
+    if (!liveSeg) return null
+    const text = liveSeg.text
+    const segDuration = Math.max(liveSeg.end - liveSeg.start, 0.001)
+    const cleanText = text.replace(/\[[^\]]+\]/g, "").trim()
+    const totalChars = Array.from(cleanText).length
+    if (totalChars === 0) return liveSeg.emotion
+
+    let lastEmo: string | null = null
+    let cleanCharsBefore = 0
+    let rawPos = 0
+    const re = /\[([^\]]+)\]/g
+    let m
+    while ((m = re.exec(text)) !== null) {
+      // Count clean chars between the previous position and this bracket tag
+      const chunkBefore = text.slice(rawPos, m.index).replace(/\[[^\]]+\]/g, "")
+      cleanCharsBefore += Array.from(chunkBefore).length
+      rawPos = m.index + m[0].length
+
+      // Estimated time this tag occurs
+      const tagTime = liveSeg.start + (cleanCharsBefore / totalChars) * segDuration
+      if (tagTime <= currentTime) {
+        const emo = getTagEmotion(m[1])
+        if (emo) lastEmo = emo
+      }
+    }
+    return lastEmo ?? liveSeg.emotion
+  }, [liveSeg, currentTime])
 
   return (
     <div className="flex flex-col h-full border-l border-border bg-background">
@@ -315,11 +425,11 @@ function RightPanel({
 
               {liveSeg ? (
                 <div className="space-y-4 pt-1">
-                  {/* Speech emotion */}
+                  {/* Speech emotion — streams sub-segment via bracket tag timing */}
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">Speech</span>
-                    <Badge variant="secondary" className="text-[11px] h-5 px-2 font-medium rounded-full transition-all duration-300">
-                      {liveSeg.emotion}
+                    <Badge key={liveSpeechEmo} variant="secondary" className="text-[11px] h-5 px-2 font-medium rounded-full transition-all duration-300 animate-in fade-in zoom-in-95 duration-200">
+                      {liveSpeechEmo}
                     </Badge>
                   </div>
 
@@ -762,7 +872,7 @@ function StudioContent() {
             </div>
           )}
 
-          <ScrollArea className="flex-1">
+          <div className="flex-1 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
             <div className="max-w-none px-[200px] py-10">
               {segments.length === 0 && !isProcessing && !processError && (
                 <div className="py-20 text-center text-muted-foreground">
@@ -792,7 +902,7 @@ function StudioContent() {
                 )
               })}
             </div>
-          </ScrollArea>
+          </div>
         </div>
 
         {/* Right: Properties panel */}
