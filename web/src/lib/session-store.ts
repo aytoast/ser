@@ -25,7 +25,8 @@ export type DiarizeResult = {
   text: string
   filename: string
   diarization_method?: string
-  has_video?: boolean    // true when FER ran on a video input
+  has_video?: boolean                             // true when FER ran on a video input
+  face_emotion_timeline?: Record<string, string> // second → emotion label, per-frame FER
 }
 
 type SessionEntry = {
