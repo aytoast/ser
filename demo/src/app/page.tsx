@@ -2,10 +2,10 @@
 
 import React, { useState } from "react"
 import Link from "next/link"
-import { motion, AnimatePresence } from "framer-motion"
+import { useRouter } from "next/navigation"
 import {
   Microphone, MagnifyingGlass, DotsThreeVertical,
-  UploadSimple, Sparkle, Play, Clock,
+  UploadSimple, Play, Clock,
 } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -26,32 +26,155 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Navbar } from "@/components/navbar"
 import { Skeleton } from "@/components/ui/skeleton"
+import { createSession, type DiarizeResult } from "@/lib/session-store"
 
-// --- Mock Data ---
+// --- Constants ---
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000"
+const MAX_FILE_BYTES = 100 * 1024 * 1024
+
+// --- Mock sessions (demo history) ---
 const MOCK_SESSIONS = [
-  { id: "1", title: "Team_Standup_2026-02-28.mp4", createdAt: "2 days ago" },
-  { id: "2", title: "Customer_Interview_Batch_7.wav", createdAt: "5 days ago" },
-  { id: "3", title: "Podcast_Episode_14.mp3", createdAt: "1 week ago" },
-  { id: "4", title: "WeChat_20250804025710.mp4", createdAt: "7 months ago" },
+  { id: "demo-1", title: "Team_Standup_2026-02-28.mp4", createdAt: "2 days ago" },
+  { id: "demo-2", title: "Customer_Interview_Batch_7.wav", createdAt: "5 days ago" },
+  { id: "demo-3", title: "Podcast_Episode_14.mp3", createdAt: "1 week ago" },
+  { id: "demo-4", title: "WeChat_20250804025710.mp4", createdAt: "7 months ago" },
 ]
 
 // --- Upload Dialog ---
-function UploadDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
+function UploadDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+}) {
+  const router = useRouter()
+  const [file, setFile] = useState<File | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [progress, setProgress] = useState<string>("")
+  const [error, setError] = useState<string | null>(null)
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] ?? null
+    setFile(f)
+    setError(null)
+    setProgress("")
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    const f = e.dataTransfer.files?.[0]
+    if (
+      f &&
+      (f.type.startsWith("audio/") ||
+        f.type.startsWith("video/") ||
+        /\.(wav|mp3|m4a|webm|ogg|flac|mp4)$/i.test(f.name))
+    ) {
+      setFile(f)
+      setError(null)
+      setProgress("")
+    }
+  }
+
+  const handleUpload = async () => {
+    if (!file) {
+      setError("Please select an audio or video file")
+      return
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setError(`File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 100 MB.`)
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+    setProgress("Uploading…")
+
+    try {
+      const formData = new FormData()
+      formData.append("audio", file, file.name)
+
+      setProgress("Transcribing and analyzing speakers…")
+      const res = await fetch(
+        `${API_BASE}/api/transcribe-diarize`,
+        { method: "POST", body: formData }
+      )
+      const data = await res.json().catch(() => ({}))
+
+      if (!res.ok) {
+        setError((data as { error?: string }).error ?? "Transcription failed")
+        return
+      }
+
+      setProgress("Processing results…")
+      const result = data as DiarizeResult
+      const sessionId = createSession(file, result)
+
+      // Navigate to studio with session ID
+      router.push(`/studio?s=${sessionId}`)
+      onOpenChange(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Request failed")
+    } finally {
+      setLoading(false)
+      setProgress("")
+    }
+  }
+
+  const handleOpenChange = (v: boolean) => {
+    if (!v && !loading) {
+      setFile(null)
+      setError(null)
+      setProgress("")
+    }
+    if (!loading) onOpenChange(v)
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-[480px]">
         <DialogHeader>
           <DialogTitle>Transcribe files</DialogTitle>
         </DialogHeader>
 
         {/* Drop Zone */}
-        <div className="border-2 border-dashed border-border rounded-lg px-6 py-10 flex flex-col items-center gap-2 text-center cursor-pointer hover:border-foreground/30 hover:bg-muted/40 transition-colors">
+        <div
+          className={`border-2 border-dashed rounded-lg px-6 py-10 flex flex-col items-center gap-2 text-center transition-colors ${
+            loading
+              ? "border-border opacity-50 cursor-not-allowed"
+              : "border-border cursor-pointer hover:border-foreground/30 hover:bg-muted/40"
+          }`}
+          onClick={() => !loading && inputRef.current?.click()}
+          onDrop={loading ? undefined : handleDrop}
+          onDragOver={(e) => e.preventDefault()}
+        >
+          <input
+            ref={inputRef}
+            type="file"
+            accept="audio/*,video/*,.wav,.mp3,.m4a,.webm,.ogg,.flac,.mp4"
+            className="hidden"
+            onChange={handleFileChange}
+            disabled={loading}
+          />
           <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center mb-1">
-            <UploadSimple size={20} className="text-muted-foreground" />
+            {loading ? (
+              <div className="w-5 h-5 border-2 border-foreground/30 border-t-foreground rounded-full animate-spin" />
+            ) : (
+              <UploadSimple size={20} className="text-muted-foreground" />
+            )}
           </div>
-          <p className="text-sm font-semibold text-foreground">Click or drag files here to upload</p>
-          <p className="text-xs text-muted-foreground">Audio & video files, up to 1000MB</p>
+          <p className="text-sm font-semibold text-foreground">
+            {loading ? progress : "Click or drag files here to upload"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {file ? `${file.name} · ${(file.size / 1024).toFixed(0)} KB` : "Audio & video files, up to 100 MB"}
+          </p>
         </div>
+
+        {error && (
+          <p className="text-sm text-destructive font-medium">{error}</p>
+        )}
 
         <Separator />
 
@@ -66,16 +189,16 @@ function UploadDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v:
               <SelectContent>
                 <SelectItem value="detect">Detect</SelectItem>
                 <SelectItem value="en">English</SelectItem>
+                <SelectItem value="zh">Chinese</SelectItem>
                 <SelectItem value="es">Spanish</SelectItem>
                 <SelectItem value="fr">French</SelectItem>
-                <SelectItem value="zh">Chinese</SelectItem>
               </SelectContent>
             </Select>
           </div>
 
-          <div className="flex items-center justify-between">
+<div className="flex items-center justify-between">
             <Label htmlFor="diarize" className="text-sm font-medium">Speaker diarization</Label>
-            <Switch id="diarize" defaultChecked />
+            <Switch id="diarize" defaultChecked disabled />
           </div>
 
           <div className="flex items-center justify-between">
@@ -89,9 +212,22 @@ function UploadDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v:
           </div>
         </div>
 
-        <Button className="w-full gap-2 font-bold">
-          <UploadSimple size={16} weight="bold" />
-          Upload files
+        <Button
+          className="w-full gap-2 font-bold"
+          onClick={handleUpload}
+          disabled={loading || !file}
+        >
+          {loading ? (
+            <>
+              <div className="w-4 h-4 border-2 border-primary-foreground/40 border-t-primary-foreground rounded-full animate-spin" />
+              {progress || "Processing…"}
+            </>
+          ) : (
+            <>
+              <UploadSimple size={16} weight="bold" />
+              Upload & transcribe
+            </>
+          )}
         </Button>
       </DialogContent>
     </Dialog>
@@ -103,7 +239,7 @@ export default function HomePage() {
   const [showModal, setShowModal] = useState(false)
   const [search, setSearch] = useState("")
 
-  const filtered = MOCK_SESSIONS.filter(s =>
+  const filtered = MOCK_SESSIONS.filter((s) =>
     s.title.toLowerCase().includes(search.toLowerCase())
   )
 
@@ -118,7 +254,9 @@ export default function HomePage() {
             <h1 className="text-2xl font-black tracking-tight">Speech to text</h1>
             <p className="text-sm text-muted-foreground mt-1">
               Transcribe audio and video files with our{" "}
-              <span className="underline underline-offset-2 text-foreground font-medium cursor-pointer">industry-leading ASR model.</span>
+              <span className="underline underline-offset-2 text-foreground font-medium cursor-pointer">
+                industry-leading ASR model.
+              </span>
             </p>
           </div>
           <Button onClick={() => setShowModal(true)} className="gap-2 font-bold shadow-sm">
@@ -143,11 +281,14 @@ export default function HomePage() {
 
         {/* Search */}
         <div className="relative mb-5">
-          <MagnifyingGlass size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <MagnifyingGlass
+            size={15}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+          />
           <Input
             placeholder="Search transcripts..."
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={(e) => setSearch(e.target.value)}
             className="pl-9 h-9 text-sm bg-card"
           />
         </div>
@@ -156,8 +297,12 @@ export default function HomePage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="text-[11px] font-black uppercase tracking-widest text-muted-foreground">Title</TableHead>
-              <TableHead className="text-[11px] font-black uppercase tracking-widest text-muted-foreground">Created at</TableHead>
+              <TableHead className="text-[11px] font-black uppercase tracking-widest text-muted-foreground">
+                Title
+              </TableHead>
+              <TableHead className="text-[11px] font-black uppercase tracking-widest text-muted-foreground">
+                Created at
+              </TableHead>
               <TableHead className="w-10" />
             </TableRow>
           </TableHeader>
@@ -169,14 +314,17 @@ export default function HomePage() {
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((session, i) => (
+              filtered.map((session) => (
                 <TableRow key={session.id} className="cursor-pointer group">
                   <TableCell>
-                    <Link href="/studio" className="flex items-center gap-3">
+                    {/* Demo sessions link to studio with ?demo=1 (shows mock data) */}
+                    <Link href="/studio?demo=1" className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-md bg-muted border border-border flex items-center justify-center flex-shrink-0">
                         <Play size={12} weight="fill" className="text-muted-foreground" />
                       </div>
-                      <span className="text-sm font-semibold truncate max-w-xs">{session.title}</span>
+                      <span className="text-sm font-semibold truncate max-w-xs">
+                        {session.title}
+                      </span>
                     </Link>
                   </TableCell>
                   <TableCell>
@@ -188,7 +336,11 @@ export default function HomePage() {
                   <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
                           <DotsThreeVertical size={16} />
                         </Button>
                       </DropdownMenuTrigger>
