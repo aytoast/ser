@@ -388,34 +388,53 @@ def _analyze_emotion(chunk: np.ndarray, sr: int) -> dict:
 
 def _transcribe(audio_array: np.ndarray) -> str:
     """Run Voxtral-3B + LoRA inference via chat template; return transcribed text."""
-    import sys
+    import traceback
     audio_sec = round(len(audio_array) / 16000, 2)
-    print(f"[_transcribe] audio={audio_sec}s  device={model.device}  dtype={next(model.parameters()).dtype}", flush=True)
+    model_dtype = next(model.parameters()).dtype
+    print(f"[_transcribe] START audio={audio_sec}s device={model.device} dtype={model_dtype}", flush=True)
 
-    t0 = time.perf_counter()
-    conversation = [{"role": "user", "content": [{"type": "audio", "audio": audio_array}]}]
-    inputs = processor.apply_chat_template(conversation, return_tensors="pt", tokenize=True)
-    print(f"[_transcribe] apply_chat_template done in {(time.perf_counter()-t0)*1000:.0f}ms  keys={list(inputs.keys())}", flush=True)
+    try:
+        t0 = time.perf_counter()
+        conversation = [{"role": "user", "content": [{"type": "audio", "audio": audio_array}]}]
+        inputs = processor.apply_chat_template(
+            conversation, return_tensors="pt", tokenize=True, add_generation_prompt=True
+        )
+        print(f"[_transcribe] apply_chat_template OK {(time.perf_counter()-t0)*1000:.0f}ms keys={list(inputs.keys())}", flush=True)
+    except Exception:
+        print(f"[_transcribe] apply_chat_template FAILED:\n{traceback.format_exc()}", flush=True)
+        raise
 
-    t0 = time.perf_counter()
-    inputs = inputs.to(model.device)
-    print(f"[_transcribe] .to(device) done in {(time.perf_counter()-t0)*1000:.0f}ms", flush=True)
+    try:
+        t0 = time.perf_counter()
+        # move to device; cast floating tensors to model dtype to avoid dtype mismatch
+        inputs = {
+            k: (v.to(model.device, dtype=model_dtype) if v.is_floating_point() else v.to(model.device))
+            for k, v in inputs.items()
+        }
+        input_len = inputs["input_ids"].shape[1]
+        print(f"[_transcribe] to(device) OK {(time.perf_counter()-t0)*1000:.0f}ms input_len={input_len}", flush=True)
+    except Exception:
+        print(f"[_transcribe] to(device) FAILED:\n{traceback.format_exc()}", flush=True)
+        raise
 
-    input_len = inputs["input_ids"].shape[1]
-    print(f"[_transcribe] input_ids shape={inputs['input_ids'].shape}  calling model.generate ...", flush=True)
+    try:
+        t0 = time.perf_counter()
+        print(f"[_transcribe] calling model.generate ...", flush=True)
+        with torch.inference_mode():
+            outputs = model.generate(**inputs, max_new_tokens=1024)
+        new_tokens = outputs.shape[1] - input_len
+        print(f"[_transcribe] model.generate OK {(time.perf_counter()-t0)*1000:.0f}ms new_tokens={new_tokens}", flush=True)
+    except Exception:
+        print(f"[_transcribe] model.generate FAILED:\n{traceback.format_exc()}", flush=True)
+        raise
 
-    t0 = time.perf_counter()
-    with torch.inference_mode():
-        outputs = model.generate(**inputs, max_new_tokens=1024)
-    gen_ms = (time.perf_counter() - t0) * 1000
-    new_tokens = outputs.shape[1] - input_len
-    print(f"[_transcribe] model.generate done in {gen_ms:.0f}ms  new_tokens={new_tokens}", flush=True)
-
-    t0 = time.perf_counter()
-    text = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
-    print(f"[_transcribe] decode done in {(time.perf_counter()-t0)*1000:.0f}ms  text={repr(text[:120])}", flush=True)
-
-    return text.strip()
+    try:
+        text = processor.decode(outputs[0][input_len:], skip_special_tokens=True).strip()
+        print(f"[_transcribe] decode OK text={repr(text[:120])}", flush=True)
+        return text
+    except Exception:
+        print(f"[_transcribe] decode FAILED:\n{traceback.format_exc()}", flush=True)
+        raise
 
 
 # ─── Endpoints ─────────────────────────────────────────────────────────────────
