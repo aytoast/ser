@@ -361,14 +361,14 @@ def train(
     timeout=3600,
     memory=32768,
 )
-def evaluate(adapter_path: str = "/output/evoxtral-lora"):
+def evaluate(adapter_path: str = "/output/evoxtral-lora", eval_name: str = "finetuned"):
     """Run Evoxtral-Bench evaluation (base vs finetuned)."""
     import torch
     import wandb
     import weave
     import json
     from pathlib import Path
-    from jiwer import wer as compute_wer
+    from jiwer import wer as compute_wer, cer as compute_cer_jiwer
     from datasets import load_from_disk, Audio
     from transformers import VoxtralForConditionalGeneration, AutoProcessor
     from peft import PeftModel
@@ -403,9 +403,24 @@ def evaluate(adapter_path: str = "/output/evoxtral-lora"):
     ds = ds.cast_column("audio", Audio(sampling_rate=16000))
     test_ds = ds["test"]
 
+    def compute_cer(ref, hyp):
+        """Character Error Rate."""
+        if not ref.strip():
+            return 0.0
+        return compute_cer_jiwer(ref, hyp)
+
     def run_model_eval(model, processor, model_name):
         model.eval()
-        results = {"wer": [], "tag_f1": []}
+        results = {
+            "wer": [], "cer": [],
+            "tag_f1": [], "tag_precision": [], "tag_recall": [],
+            "tag_hallucination_rate": [],
+            "emphasis_f1": [],
+        }
+        per_tag_tp = Counter()  # true positives per tag type
+        per_tag_fp = Counter()  # false positives (predicted but not in ref)
+        per_tag_fn = Counter()  # false negatives (in ref but not predicted)
+        all_predictions = []
 
         for i in range(min(len(test_ds), 50)):  # eval on up to 50 samples
             row = test_ds[i]
@@ -428,22 +443,108 @@ def evaluate(adapter_path: str = "/output/evoxtral-lora"):
             input_len = inputs["input_ids"].shape[1]
             prediction = processor.tokenizer.decode(output_ids[0][input_len:], skip_special_tokens=True)
 
-            # Compute metrics
+            # --- Text metrics ---
             ref_plain = strip_tags(tagged_text)
             pred_plain = strip_tags(prediction)
             if ref_plain.strip():
                 results["wer"].append(compute_wer(ref_plain, pred_plain))
-            results["tag_f1"].append(compute_tag_f1(prediction, tagged_text))
+                results["cer"].append(compute_cer(ref_plain, pred_plain))
+
+            # --- Tag metrics (precision, recall, F1) ---
+            pred_tags = Counter(extract_tags(prediction))
+            ref_tags = Counter(extract_tags(tagged_text))
+
+            common = pred_tags & ref_tags
+            tp = sum(common.values())
+            fp = sum(pred_tags.values()) - tp
+            fn = sum(ref_tags.values()) - tp
+
+            prec = tp / (tp + fp) if (tp + fp) > 0 else (1.0 if not ref_tags else 0.0)
+            rec = tp / (tp + fn) if (tp + fn) > 0 else (1.0 if not pred_tags else 0.0)
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else (1.0 if not ref_tags and not pred_tags else 0.0)
+
+            results["tag_precision"].append(prec)
+            results["tag_recall"].append(rec)
+            results["tag_f1"].append(f1)
+
+            # Tag hallucination rate
+            ref_tag_set = set(ref_tags.keys())
+            hallucinated = sum(v for k, v in pred_tags.items() if k not in ref_tag_set)
+            hall_rate = hallucinated / sum(pred_tags.values()) if pred_tags else 0.0
+            results["tag_hallucination_rate"].append(hall_rate)
+
+            # Per-tag breakdown
+            for tag in set(list(pred_tags.keys()) + list(ref_tags.keys())):
+                matched = min(pred_tags.get(tag, 0), ref_tags.get(tag, 0))
+                per_tag_tp[tag] += matched
+                per_tag_fp[tag] += max(0, pred_tags.get(tag, 0) - matched)
+                per_tag_fn[tag] += max(0, ref_tags.get(tag, 0) - matched)
+
+            # Emphasis F1
+            pred_emph = Counter([m.group(0).lower() for m in re.finditer(r'\b[A-Z]{2,}\b', prediction)])
+            ref_emph = Counter([m.group(0).lower() for m in re.finditer(r'\b[A-Z]{2,}\b', tagged_text)])
+            emph_common = sum((pred_emph & ref_emph).values())
+            emph_total_p = sum(pred_emph.values())
+            emph_total_r = sum(ref_emph.values())
+            if emph_total_p == 0 and emph_total_r == 0:
+                emph_f1 = 1.0
+            elif emph_total_p == 0 or emph_total_r == 0:
+                emph_f1 = 0.0
+            else:
+                ep = emph_common / emph_total_p
+                er = emph_common / emph_total_r
+                emph_f1 = 2 * ep * er / (ep + er) if (ep + er) > 0 else 0.0
+            results["emphasis_f1"].append(emph_f1)
+
+            # Store prediction for W&B table
+            all_predictions.append({
+                "sample_idx": i,
+                "reference": tagged_text,
+                "prediction": prediction,
+                "wer": results["wer"][-1] if results["wer"] else None,
+                "tag_f1": f1,
+                "tag_hallucination_rate": hall_rate,
+            })
 
             if i < 5:
                 print(f"\n[{model_name} Sample {i}]")
                 print(f"  Reference: {tagged_text[:100]}...")
                 print(f"  Predicted: {prediction[:100]}...")
 
-        avg_wer = sum(results["wer"]) / max(len(results["wer"]), 1)
-        avg_tag_f1 = sum(results["tag_f1"]) / max(len(results["tag_f1"]), 1)
-        print(f"\n{model_name} Results: WER={avg_wer:.4f}, Tag F1={avg_tag_f1:.4f}")
-        return {"avg_wer": avg_wer, "avg_tag_f1": avg_tag_f1}
+        # Compute averages
+        def avg(lst):
+            return sum(lst) / max(len(lst), 1)
+
+        avg_metrics = {f"avg_{k}": avg(v) for k, v in results.items()}
+
+        # Per-tag F1 breakdown
+        per_tag_f1 = {}
+        for tag in sorted(per_tag_tp.keys() | per_tag_fp.keys() | per_tag_fn.keys()):
+            tp = per_tag_tp[tag]
+            fp = per_tag_fp[tag]
+            fn = per_tag_fn[tag]
+            p = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+            per_tag_f1[tag] = {"precision": round(p, 3), "recall": round(r, 3), "f1": round(f, 3),
+                               "support": tp + fn}
+
+        avg_metrics["per_tag_f1"] = per_tag_f1
+        avg_metrics["predictions"] = all_predictions
+
+        print(f"\n{model_name} Results:")
+        print(f"  WER:                  {avg_metrics['avg_wer']:.4f}")
+        print(f"  CER:                  {avg_metrics['avg_cer']:.4f}")
+        print(f"  Tag F1:               {avg_metrics['avg_tag_f1']:.4f}")
+        print(f"  Tag Precision:        {avg_metrics['avg_tag_precision']:.4f}")
+        print(f"  Tag Recall:           {avg_metrics['avg_tag_recall']:.4f}")
+        print(f"  Tag Hallucination:    {avg_metrics['avg_tag_hallucination_rate']:.4f}")
+        print(f"  Emphasis F1:          {avg_metrics['avg_emphasis_f1']:.4f}")
+        print(f"\n  Per-tag breakdown:")
+        for tag, m in sorted(per_tag_f1.items(), key=lambda x: -x[1]["support"]):
+            print(f"    [{tag}]: F1={m['f1']:.3f} P={m['precision']:.3f} R={m['recall']:.3f} (n={m['support']})")
+
+        return avg_metrics
 
     # ── Evaluate base model ──
     wandb.init(project="evoxtral", name="eval-base", job_type="evaluation", tags=["eval", "base"])
@@ -453,7 +554,26 @@ def evaluate(adapter_path: str = "/output/evoxtral-lora"):
         MODEL_ID, dtype=torch.bfloat16, device_map="auto",
     )
     base_results = run_model_eval(base_model, processor, "BASE")
-    wandb.log({"eval/wer": base_results["avg_wer"], "eval/tag_f1": base_results["avg_tag_f1"]})
+    wandb.log({
+        "eval/wer": base_results["avg_wer"],
+        "eval/cer": base_results["avg_cer"],
+        "eval/tag_f1": base_results["avg_tag_f1"],
+        "eval/tag_precision": base_results["avg_tag_precision"],
+        "eval/tag_recall": base_results["avg_tag_recall"],
+        "eval/tag_hallucination_rate": base_results["avg_tag_hallucination_rate"],
+        "eval/emphasis_f1": base_results["avg_emphasis_f1"],
+    })
+    # Log per-tag breakdown as table
+    tag_table = wandb.Table(columns=["tag", "f1", "precision", "recall", "support"])
+    for tag, m in base_results["per_tag_f1"].items():
+        tag_table.add_data(tag, m["f1"], m["precision"], m["recall"], m["support"])
+    wandb.log({"eval/per_tag_breakdown": tag_table})
+    # Log predictions table
+    pred_table = wandb.Table(columns=["idx", "reference", "prediction", "wer", "tag_f1", "hallucination_rate"])
+    for p in base_results["predictions"]:
+        pred_table.add_data(p["sample_idx"], p["reference"], p["prediction"],
+                           p["wer"], p["tag_f1"], p["tag_hallucination_rate"])
+    wandb.log({"eval/predictions": pred_table})
     wandb.finish()
 
     # Free base model memory
@@ -462,21 +582,45 @@ def evaluate(adapter_path: str = "/output/evoxtral-lora"):
 
     # ── Evaluate finetuned model ──
     if Path(adapter_path).exists():
-        wandb.init(project="evoxtral", name="eval-finetuned", job_type="evaluation", tags=["eval", "finetuned"])
+        wandb.init(project="evoxtral", name=f"eval-{eval_name}", job_type="evaluation", tags=["eval", eval_name])
         print("Loading finetuned model...")
         base_model = VoxtralForConditionalGeneration.from_pretrained(
             MODEL_ID, dtype=torch.bfloat16, device_map="auto",
         )
         ft_model = PeftModel.from_pretrained(base_model, adapter_path)
         ft_results = run_model_eval(ft_model, processor, "FINETUNED")
-        wandb.log({"eval/wer": ft_results["avg_wer"], "eval/tag_f1": ft_results["avg_tag_f1"]})
+        wandb.log({
+            "eval/wer": ft_results["avg_wer"],
+            "eval/cer": ft_results["avg_cer"],
+            "eval/tag_f1": ft_results["avg_tag_f1"],
+            "eval/tag_precision": ft_results["avg_tag_precision"],
+            "eval/tag_recall": ft_results["avg_tag_recall"],
+            "eval/tag_hallucination_rate": ft_results["avg_tag_hallucination_rate"],
+            "eval/emphasis_f1": ft_results["avg_emphasis_f1"],
+        })
+        # Log per-tag breakdown as table
+        tag_table = wandb.Table(columns=["tag", "f1", "precision", "recall", "support"])
+        for tag, m in ft_results["per_tag_f1"].items():
+            tag_table.add_data(tag, m["f1"], m["precision"], m["recall"], m["support"])
+        wandb.log({"eval/per_tag_breakdown": tag_table})
+        # Log predictions table
+        pred_table = wandb.Table(columns=["idx", "reference", "prediction", "wer", "tag_f1", "hallucination_rate"])
+        for p in ft_results["predictions"]:
+            pred_table.add_data(p["sample_idx"], p["reference"], p["prediction"],
+                               p["wer"], p["tag_f1"], p["tag_hallucination_rate"])
+        wandb.log({"eval/predictions": pred_table})
         wandb.finish()
 
-        print(f"\n{'='*50}")
+        print(f"\n{'='*60}")
         print(f"COMPARISON: Base vs Finetuned")
-        print(f"{'='*50}")
-        print(f"WER:    {base_results['avg_wer']:.4f} → {ft_results['avg_wer']:.4f}")
-        print(f"Tag F1: {base_results['avg_tag_f1']:.4f} → {ft_results['avg_tag_f1']:.4f}")
+        print(f"{'='*60}")
+        print(f"WER:                {base_results['avg_wer']:.4f} → {ft_results['avg_wer']:.4f}")
+        print(f"CER:                {base_results['avg_cer']:.4f} → {ft_results['avg_cer']:.4f}")
+        print(f"Tag F1:             {base_results['avg_tag_f1']:.4f} → {ft_results['avg_tag_f1']:.4f}")
+        print(f"Tag Precision:      {base_results['avg_tag_precision']:.4f} → {ft_results['avg_tag_precision']:.4f}")
+        print(f"Tag Recall:         {base_results['avg_tag_recall']:.4f} → {ft_results['avg_tag_recall']:.4f}")
+        print(f"Tag Hallucination:  {base_results['avg_tag_hallucination_rate']:.4f} → {ft_results['avg_tag_hallucination_rate']:.4f}")
+        print(f"Emphasis F1:        {base_results['avg_emphasis_f1']:.4f} → {ft_results['avg_emphasis_f1']:.4f}")
     else:
         print(f"No adapter found at {adapter_path}, skipping finetuned eval")
         ft_results = None
@@ -494,8 +638,12 @@ def main(
     batch_size: int = 2,
     push_to_hub: bool = True,
     eval_only: bool = False,
+    eval_rl: bool = False,
 ):
-    if eval_only:
+    if eval_rl:
+        results = evaluate.remote(adapter_path="/output/evoxtral-rl", eval_name="rl")
+        print(results)
+    elif eval_only:
         results = evaluate.remote()
         print(results)
     else:

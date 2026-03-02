@@ -1,6 +1,6 @@
 """
 Evoxtral speech-to-text server (Model layer).
-Runs Voxtral-Mini-3B + evoxtral-lora locally for transcription with expressive
+Runs Voxtral-Mini-3B + evoxtral-rl locally for transcription with expressive
 tags. For video files, also runs FER (MobileViT-XXS ONNX) per segment.
 """
 import asyncio
@@ -19,7 +19,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 MODEL_ID   = os.environ.get("MODEL_ID",   "mistralai/Voxtral-Mini-3B-2507")
-ADAPTER_ID = os.environ.get("ADAPTER_ID", "YongkangZOU/evoxtral-lora")
+ADAPTER_ID = os.environ.get("ADAPTER_ID", "YongkangZOU/evoxtral-rl")
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "100")) * 1024 * 1024
 TARGET_SR = 16000
 
