@@ -9,6 +9,7 @@ import {
   Heart,
   Plus,
   X,
+  Broadcast,
 } from "@phosphor-icons/react"
 import Image from "next/image"
 import {
@@ -92,6 +93,14 @@ export function AppSidebar() {
                   <Link href="/">
                     <Plus />
                     <span>Create</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild isActive={pathname === "/live"}>
+                  <Link href="/live">
+                    <Broadcast />
+                    <span>Live Mode</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
