@@ -115,6 +115,39 @@ _FER_CLASSES   = ["Anger", "Contempt", "Disgust", "Fear", "Happy", "Neutral", "S
 _VIDEO_EXTS    = {".mp4", ".mkv", ".avi", ".mov", ".m4v"}
 
 
+def _is_lfs_pointer(path: str) -> bool:
+    """Return True if the file looks like a Git LFS pointer (small text file)."""
+    try:
+        size = os.path.getsize(path)
+        if size > 10_000:
+            return False
+        with open(path, "rb") as f:
+            header = f.read(64)
+        return header.startswith(b"version https://git-lfs")
+    except Exception:
+        return False
+
+
+def _resolve_lfs_model(fer_path: str) -> str:
+    """
+    If fer_path is a Git LFS pointer, download the real binary.
+    Returns the path to the actual model file.
+    """
+    import urllib.request
+    real_path = fer_path + ".resolved"
+    # Use HF Space's own file resolution URL to download the actual binary
+    url = "https://huggingface.co/spaces/mistral-hackaton-2026/ethos/resolve/main/models/emotion_model_web.onnx"
+    print(f"[voxtral] FER: file is LFS pointer — downloading from {url}")
+    try:
+        urllib.request.urlretrieve(url, real_path)
+        size = os.path.getsize(real_path)
+        print(f"[voxtral] FER: downloaded {size} bytes to {real_path}")
+        return real_path
+    except Exception as e:
+        print(f"[voxtral] FER: download failed: {e}")
+        return fer_path
+
+
 def _init_fer() -> None:
     global _fer_session, _fer_input_name, _face_cascade
 
@@ -129,13 +162,30 @@ def _init_fer() -> None:
         print("[voxtral] FER model not found — facial emotion disabled")
         return
 
+    # Debug: log file size and first bytes to diagnose LFS pointer vs real binary
+    try:
+        file_size = os.path.getsize(fer_path)
+        with open(fer_path, "rb") as f:
+            first_bytes = f.read(32).hex()
+        print(f"[voxtral] FER file: {fer_path} size={file_size} first_bytes={first_bytes}")
+    except Exception as e:
+        print(f"[voxtral] FER file stat error: {e}")
+
+    # If it's a Git LFS pointer, download the actual binary
+    if _is_lfs_pointer(fer_path):
+        print("[voxtral] FER: detected Git LFS pointer — resolving...")
+        fer_path = _resolve_lfs_model(fer_path)
+
     try:
         import onnxruntime as rt
+        print(f"[voxtral] FER: onnxruntime version = {rt.__version__}")
         _fer_session    = rt.InferenceSession(fer_path, providers=["CPUExecutionProvider"])
         _fer_input_name = _fer_session.get_inputs()[0].name
-        print(f"[voxtral] FER model loaded: {fer_path} (input={_fer_input_name})")
+        print(f"[voxtral] FER model loaded: {fer_path} (input={_fer_input_name}, shape={_fer_session.get_inputs()[0].shape})")
     except Exception as e:
+        import traceback
         print(f"[voxtral] FER model load failed: {e}")
+        print(f"[voxtral] FER traceback: {traceback.format_exc()}")
         return
 
     try:

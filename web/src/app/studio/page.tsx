@@ -909,7 +909,7 @@ function StudioContent() {
         <div className="flex-1 overflow-hidden flex flex-col min-w-0 relative">
           {isProcessing && segments.length === 0 && (
             <div className="absolute inset-0 z-20 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-500">
-              {streamingText !== null && streamingText.length > 0 ? (
+                {streamingText !== null && streamingText.length > 0 ? (
                 /* Live streaming tokens */
                 <div className="max-w-lg w-full space-y-4">
                   <div className="flex items-center justify-center gap-2 mb-4">
