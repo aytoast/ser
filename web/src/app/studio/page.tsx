@@ -669,7 +669,7 @@ function StudioContent() {
   // Per-segment DOM element refs for auto-scroll
   const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map())
 
-  const [session, setSession] = useState(() => sessionId ? getSession(sessionId) : null)
+  const [session, setSession] = useState<ReturnType<typeof getSession>>(null)
   const [activeId, setActiveId] = useState<number>(1)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -733,9 +733,9 @@ function StudioContent() {
                 }
                 try {
                   const pollRes = await fetch(`${API_BASE}/api/job/${job_id}`)
-                  const pollData = await pollRes.json()
-                  if (pollData.status === "done") {
-                    resolve(pollData.data as DiarizeResult)
+                  const pollData = await pollRes.json() as { status: string; data?: DiarizeResult; error?: string }
+                  if (pollData.status === "done" && pollData.data) {
+                    resolve(pollData.data)
                   } else if (pollData.status === "error") {
                     reject(new Error(pollData.error ?? "Processing failed"))
                   } else {
@@ -748,7 +748,7 @@ function StudioContent() {
               setTimeout(tick, POLL_INTERVAL)
             })
           } else {
-            // Fallback: old proxy / local dev returned result directly
+            // Fallback: direct result (old proxy / local dev without job queue)
             data = submitJson as DiarizeResult
           }
 
@@ -850,7 +850,7 @@ function StudioContent() {
             {isProcessing && (
               <Badge variant="secondary" className="bg-blue-500/10 text-blue-500 hover:bg-blue-500/10 border-blue-500/20 gap-2 font-medium px-3 h-8">
                 <div className="size-2 rounded-full bg-blue-500 animate-pulse" />
-                Analysing Speech...
+                Processing...
               </Badge>
             )}
 
@@ -889,15 +889,17 @@ function StudioContent() {
         <div className="flex-1 overflow-hidden flex flex-col min-w-0 relative">
           {isProcessing && segments.length === 0 && (
             <div className="absolute inset-0 z-20 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-500">
-              <div className="size-16 mb-6 relative">
-                <div className="absolute inset-0 border-4 border-muted rounded-full" />
-                <div className="absolute inset-0 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                <Waveform size={24} className="absolute inset-0 m-auto text-primary animate-pulse" />
-              </div>
-              <h2 className="text-xl font-bold mb-2">Analysing Audio</h2>
-              <p className="text-muted-foreground text-sm max-w-xs mx-auto">
-                Voxtral is currently transcribing and identifying speakers. This should only take a moment...
-              </p>
+                <>
+                  <div className="size-16 mb-6 relative">
+                    <div className="absolute inset-0 border-4 border-muted rounded-full" />
+                    <div className="absolute inset-0 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+                    <Waveform size={24} className="absolute inset-0 m-auto text-primary animate-pulse" />
+                  </div>
+                  <h2 className="text-xl font-bold mb-2">Transcribing Audio</h2>
+                  <p className="text-muted-foreground text-sm max-w-xs mx-auto">
+                    Running Evoxtral inference... this may take a minute.
+                  </p>
+                </>
             </div>
           )}
 
