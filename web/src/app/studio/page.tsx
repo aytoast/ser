@@ -687,8 +687,8 @@ function StudioContent() {
   }, [sessionId])
 
   // Automatic processing for pending sessions.
-  // Uses Modal streaming API: tokens arrive via SSE for live display,
-  // then the full transcription is converted to a DiarizeResult.
+  // Video files → async job polling via /api/transcribe-diarize (returns full FER data).
+  // Audio files → Modal SSE via /api/transcribe-stream (fast token streaming).
   useEffect(() => {
     if (!session || processingRef.current || processError) return
 
@@ -702,79 +702,99 @@ function StudioContent() {
           const formData = new FormData()
           formData.append("audio", session.file!, session.filename)
 
-          const res = await fetch("/api/transcribe-stream", {
-            method: "POST",
-            body: formData,
-          })
-
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}))
-            throw new Error(errData.error ?? "Transcription failed")
-          }
-
-          // Consume SSE stream
-          const reader = res.body!.getReader()
-          const decoder = new TextDecoder()
-          let fullText = ""
-          let buffer = ""
-
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-
-            buffer += decoder.decode(value, { stream: true })
-            const lines = buffer.split("\n")
-            buffer = lines.pop() ?? ""
-
-            for (const line of lines) {
-              if (!line.startsWith("data: ")) continue
-              try {
-                const payload = JSON.parse(line.slice(6))
-                if (payload.token) {
-                  fullText += payload.token
-                  setStreamingText(fullText)
+          if (isVideoFile(session.filename)) {
+            // ── Video: async polling → returns full FER + diarization ──────────
+            const submitRes = await fetch("/api/transcribe-diarize", {
+              method: "POST",
+              body: formData,
+            })
+            if (!submitRes.ok) {
+              const errData = await submitRes.json().catch(() => ({}))
+              throw new Error(errData.error ?? "Submit failed")
+            }
+            const submitJson = await submitRes.json() as { job_id?: string } & Partial<DiarizeResult>
+            let data: DiarizeResult
+            if (submitJson.job_id) {
+              const job_id = submitJson.job_id
+              data = await new Promise<DiarizeResult>((resolve, reject) => {
+                const tick = async () => {
+                  try {
+                    const r = await fetch(`/api/job/${job_id}`)
+                    const j = await r.json() as { status: string; data?: DiarizeResult; error?: string }
+                    if (j.status === "done" && j.data) resolve(j.data)
+                    else if (j.status === "error") reject(new Error(j.error ?? "Processing failed"))
+                    else setTimeout(tick, 3000)
+                  } catch (e) { reject(e) }
                 }
-                if (payload.done) {
-                  fullText = payload.transcription ?? fullText
-                  setStreamingText(fullText)
-                }
-              } catch {
-                // skip malformed SSE lines
+                setTimeout(tick, 3000)
+              })
+            } else {
+              data = submitJson as DiarizeResult
+            }
+            updateSession(session.id, data)
+            const updated = getSession(session.id)
+            setSession(updated)
+            if (updated?.data.segments && updated.data.segments.length > 0) {
+              setActiveId(updated.data.segments[0].id)
+            }
+            setStreamingText(null)
+          } else {
+            // ── Audio: Modal SSE → live token streaming ───────────────────────
+            const res = await fetch("/api/transcribe-stream", {
+              method: "POST",
+              body: formData,
+            })
+            if (!res.ok) {
+              const errData = await res.json().catch(() => ({}))
+              throw new Error(errData.error ?? "Transcription failed")
+            }
+
+            // Consume SSE stream
+            const reader = res.body!.getReader()
+            const decoder = new TextDecoder()
+            let fullText = ""
+            let buffer = ""
+
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) break
+              buffer += decoder.decode(value, { stream: true })
+              const lines = buffer.split("\n")
+              buffer = lines.pop() ?? ""
+              for (const line of lines) {
+                if (!line.startsWith("data: ")) continue
+                try {
+                  const payload = JSON.parse(line.slice(6))
+                  if (payload.token) { fullText += payload.token; setStreamingText(fullText) }
+                  if (payload.done) { fullText = payload.transcription ?? fullText; setStreamingText(fullText) }
+                } catch { /* skip malformed SSE lines */ }
               }
             }
-          }
 
-          // Get audio duration from the media element
-          const mediaDuration = mediaRef.current?.duration || 0
-
-          // Derive emotion from the first bracket tag in transcription
-          const firstTagMatch = fullText.match(/\[([^\]]+)\]/)
-          const firstTag = firstTagMatch ? getTagEntry(firstTagMatch[1]) : null
-
-          // Build DiarizeResult from plain transcription
-          const data: DiarizeResult = {
-            segments: fullText.trim() ? [{
-              id: 1,
-              speaker: "SPEAKER_00",
-              start: 0,
-              end: mediaDuration || 30,
+            const mediaDuration = mediaRef.current?.duration || 0
+            const firstTagMatch = fullText.match(/\[([^\]]+)\]/)
+            const firstTag = firstTagMatch ? getTagEntry(firstTagMatch[1]) : null
+            const data: DiarizeResult = {
+              segments: fullText.trim() ? [{
+                id: 1, speaker: "SPEAKER_00",
+                start: 0, end: mediaDuration || 30,
+                text: fullText.trim(),
+                emotion: firstTag?.emotion ?? "Neutral",
+                valence: firstTag?.valence ?? 0,
+                arousal: firstTag?.arousal ?? 0,
+              }] : [],
+              duration: mediaDuration || 30,
               text: fullText.trim(),
-              emotion: firstTag?.emotion ?? "Neutral",
-              valence: firstTag?.valence ?? 0,
-              arousal: firstTag?.arousal ?? 0,
-            }] : [],
-            duration: mediaDuration || 30,
-            text: fullText.trim(),
-            filename: session.filename,
+              filename: session.filename,
+            }
+            updateSession(session.id, data)
+            const updated = getSession(session.id)
+            setSession(updated)
+            if (updated?.data.segments && updated.data.segments.length > 0) {
+              setActiveId(updated.data.segments[0].id)
+            }
+            setStreamingText(null)
           }
-
-          updateSession(session.id, data)
-          const updated = getSession(session.id)
-          setSession(updated)
-          if (updated?.data.segments && updated.data.segments.length > 0) {
-            setActiveId(updated.data.segments[0].id)
-          }
-          setStreamingText(null)
         } catch (e) {
           processingRef.current = false
           setProcessError(e instanceof Error ? e.message : "Request failed")
