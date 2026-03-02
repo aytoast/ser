@@ -36,6 +36,11 @@ RUN cd web && npm ci
 
 COPY web/ web/
 
+# Download browser-side FER model (ONNX) — not in HF Space git (Xet restriction)
+RUN curl -fsSL \
+    "https://raw.githubusercontent.com/aytoast/ser/master/web/public/emotion_model_web.onnx" \
+    -o web/public/emotion_model_web.onnx
+
 # Build with empty API base → browser uses relative paths → nginx routes /api/*
 RUN cd web && NEXT_PUBLIC_API_URL="" npm run build \
     && cp -r public .next/standalone/public \
